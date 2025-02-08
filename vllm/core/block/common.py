@@ -288,7 +288,15 @@ class BlockList:
 
     def ids(self) -> List[int]:
         return self._block_ids
+    
+    def remove(self, block_index: int):
+        self._blocks.pop(block_index)
+        self._block_ids.pop(block_index)
+        # print(f"Block removed from BlockList, len(self._blocks) = {len(self._blocks)}, _block_ids = {self._block_ids}")
 
+    def remove_blocks(self, start_idx: int, end_idx: int):
+        del self._blocks[start_idx:end_idx]
+        del self._block_ids[start_idx:end_idx]
 
 @dataclass
 class CacheMetricData:

@@ -149,6 +149,7 @@ class NaiveBlockAllocator(BlockAllocator):
     def free(self, block: Block, keep_block_object: bool = False) -> None:
         # Release the physical block id
         self._free_block_id(block)
+        block.is_to_be_release = False # reset the flag
 
         # Release the block object
         if not keep_block_object:
@@ -366,6 +367,7 @@ class NaiveBlock(Block):
         self._block_id = block_id
         self._allocator = allocator
         self._cow_target = _cow_target if _cow_target is not None else self
+        self._is_to_be_release = False
 
         self._append_token_ids_no_cow(token_ids)
 
@@ -452,3 +454,11 @@ class NaiveBlock(Block):
     @property
     def content_hash(self) -> Optional[int]:
         return None
+    
+    @property
+    def is_to_be_release(self) -> bool:
+        return self._is_to_be_release
+    
+    @is_to_be_release.setter
+    def is_to_be_release(self, value: bool):
+        self._is_to_be_release = value

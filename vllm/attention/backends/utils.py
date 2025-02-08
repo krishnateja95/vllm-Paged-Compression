@@ -78,7 +78,7 @@ def _compute_slot_mapping_numpy(slot_mapping: List[int],
 def compute_slot_mapping(is_profile_run: bool, slot_mapping: List[int],
                          seq_id: int, seq_len: int, context_len: int,
                          start_idx: int, block_size: int,
-                         block_tables: Dict[int, List[int]]):
+                         block_tables: Dict[int, List[int]]): 
     """
     Compute slot mapping.
     """
@@ -152,6 +152,9 @@ class CommonMetadataBuilder(AttentionMetadataBuilder[TAttentionMetadata]):
                  inter_data.orig_seq_lens, inter_data.seq_lens,
                  inter_data.query_lens, inter_data.context_lens,
                  inter_data.curr_sliding_window_blocks):
+            print(f"CommonMetadataBuilder: seq_id: {seq_id}, token_len: {token_len}, seq_len: {seq_len}, "
+                  f"curr_seq_len: {curr_seq_len}, query_len: {query_len}, context_len: {context_len}, curr_sliding_window_block: {curr_sliding_window_block}"
+                  f", is_prompt: {is_prompt}, block_tables: {block_tables}")
             self.context_lens.append(context_len)
             if is_prompt:
                 mm_maps = inter_data.multi_modal_placeholder_maps
@@ -184,6 +187,9 @@ class CommonMetadataBuilder(AttentionMetadataBuilder[TAttentionMetadata]):
                 else:
                     block_table = block_tables[seq_id][
                         -curr_sliding_window_block:]
+                print(f"CommonMetadataBuilder: decode phase rebuild block_table based on the input block_table !!!!!")
+            else:
+                print(f"CommonMetadataBuilder: prefill phase create an empty block_table !!!!!")
             self.block_tables.append(block_table)
 
             # Compute slot mapping.

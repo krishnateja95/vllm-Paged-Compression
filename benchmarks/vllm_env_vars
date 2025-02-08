@@ -1,0 +1,5 @@
+IF_NAME=hsn0
+export HOST_IP=`ip -4 addr show $IF_NAME | grep -oP '(?<=inet\s)\d+(\.\d+){3}'`
+export VLLM_HOST_IP=$HOST_IP
+export VLLM_ATTENTION_BACKEND=TORCH_SDPA
+export VLLM_RPC_BASE_PATH=$HOME/vllm_ipc/

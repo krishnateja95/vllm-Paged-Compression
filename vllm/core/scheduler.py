@@ -353,12 +353,27 @@ class Scheduler:
             num_cpu_blocks //= pipeline_parallel_size
 
         # Create the block space manager.
-        self.block_manager = BlockSpaceManagerImpl(
-            block_size=self.cache_config.block_size,
-            num_gpu_blocks=num_gpu_blocks,
-            num_cpu_blocks=num_cpu_blocks,
-            sliding_window=self.cache_config.sliding_window,
-            enable_caching=self.cache_config.enable_prefix_caching)
+        if self.cache_config.paged_evict_config is None:
+            self.block_manager = BlockSpaceManagerImpl(
+                block_size=self.cache_config.block_size,
+                num_gpu_blocks=num_gpu_blocks,
+                num_cpu_blocks=num_cpu_blocks,
+                sliding_window=self.cache_config.sliding_window,
+                enable_caching=self.cache_config.enable_prefix_caching)
+        else:
+            if self.cache_config.paged_evict_config.cache_prune_type == "percentage":
+                block_size = self.cache_config.paged_evict_config.compressed_block_size
+            else:
+                # the cache_budget case
+                block_size = self.cache_config.block_size
+            
+            self.block_manager = BlockSpaceManagerImpl(
+                block_size=block_size,
+                num_gpu_blocks=num_gpu_blocks,
+                num_cpu_blocks=num_cpu_blocks,
+                sliding_window=self.cache_config.sliding_window,
+                enable_caching=self.cache_config.enable_prefix_caching,
+                paged_evict_config=self.cache_config.paged_evict_config)
 
         # Sequence groups in the WAITING state.
         # Contain new prefill or preempted requests.
@@ -639,8 +654,10 @@ class Scheduler:
                                                    blocks_to_swap_out)
                     if preempted_mode == PreemptionMode.RECOMPUTE:
                         preempted.append(victim_seq_group)
+                        logger.info(f"Scheduler preempting request {victim_seq_group.request_id} with RECOMPUTE mode")
                     else:
                         swapped_out.append(victim_seq_group)
+                        logger.info(f"Scheduler preempting request {victim_seq_group.request_id} with SWAP mode")
 
                 if not cont_loop:
                     break
@@ -1287,6 +1304,9 @@ class Scheduler:
         # Schedule sequence groups.
         # This function call changes the internal states of the scheduler
         # such as self.running, self.swapped, and self.waiting.
+        if self.cache_config.paged_evict_config is not None:
+            assert self.scheduler_config.enable_chunked_prefill == False, "Schedule(): Paged eviction is not supported chunked-prefill yet."
+        
         scheduler_start_time = time.perf_counter()
 
         scheduler_outputs: SchedulerOutputs = self._schedule()
@@ -1314,6 +1334,8 @@ class Scheduler:
             seq_data: Dict[int, SequenceData] = {}
             # seq_id -> physical block numbers
             block_tables: Dict[int, List[int]] = {}
+            # seq_id -> sequence kv cache len
+            seq_kv_lens: Dict[int, int] = {}
 
             if seq_group.is_encoder_decoder():
                 # Encoder associated with SequenceGroup
@@ -1328,19 +1350,25 @@ class Scheduler:
                 encoder_seq_data = None
                 cross_block_table = None
 
+            do_sample = True
+            is_prompt = seq_group.is_prefill()
             for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
                 seq_id = seq.seq_id
                 seq_data[seq_id] = seq.data
                 block_tables[seq_id] = self.block_manager.get_block_table(seq)
                 self.block_manager.access_all_blocks_in_seq(seq, now)
+                # print(f"Scheduler::schedule, ===========seq_data_len = {seq.data.get_len()}, is_prompt: {is_prompt}") 
+                if ((self.cache_config.paged_evict_config is not None) and is_prompt == False):
+                    self.block_manager.mark_part_blocks_to_be_released(seq)
+                # get the seq_kv_len from block_manager
+                seq_kv_lens[seq_id] = self.block_manager.get_seq_kv_len(seq)        
 
             if self.cache_config.enable_prefix_caching:
                 common_computed_block_nums = (
                     self.block_manager.get_common_computed_block_ids(
                         seq_group.get_seqs(status=SequenceStatus.RUNNING)))
 
-            do_sample = True
-            is_prompt = seq_group.is_prefill()
+            
             # We should send the metadata to workers when the first prefill
             # is sent. Subsequent requests could be chunked prefill or decode.
             is_first_prefill = False
@@ -1358,7 +1386,8 @@ class Scheduler:
                 if (token_chunk_size + num_computed_tokens <
                         seqs[0].data.get_len()):
                     do_sample = False
-
+            
+            # print(f"Scheduler::schedule, is_first_prefill: {is_first_prefill}, block_tables: {block_tables}")
             # It assumes the scheduled_seq_groups is ordered by
             # prefill < decoding.
             if is_first_prefill or not self.scheduler_config.send_delta_data:
@@ -1387,6 +1416,7 @@ class Scheduler:
                     if scheduler_outputs.num_prefill_groups > 0 else None,
                     mm_processor_kwargs=seq_group.mm_processor_kwargs,
                     prompt_adapter_request=seq_group.prompt_adapter_request,
+                    seq_kv_lens = seq_kv_lens,
                 )
             else:
                 # When SPMD mode is enabled, we only send delta data except for
@@ -1402,6 +1432,7 @@ class Scheduler:
                     do_sample=do_sample,
                     token_chunk_size=token_chunk_size,
                     computed_block_nums=common_computed_block_nums,
+                    seq_kv_lens = seq_kv_lens,
                 )
             seq_group_metadata_list.append(seq_group_metadata)
 
@@ -1833,3 +1864,11 @@ class Scheduler:
         num_new_tokens = min(num_new_tokens, remaining_token_budget)
 
         return num_new_tokens
+    
+    def notify_step_done(self) -> None:
+        """Notify the scheduler that a step is done."""
+        if self.cache_config.paged_evict_config is not None:
+            for seq_group in self.running:
+                for seq in seq_group.get_seqs():
+                    self.block_manager.free_released_blocks(seq)
+                

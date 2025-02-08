@@ -75,6 +75,16 @@ class Block(ABC):
     @abstractmethod
     def last_accessed(self, last_accessed_ts: float):
         raise NotImplementedError
+    
+    @property
+    @abstractmethod
+    def is_to_be_release(self) -> bool:
+        raise NotImplementedError
+    
+    @is_to_be_release.setter
+    @abstractmethod
+    def is_to_be_release(self, value: bool):
+        raise NotImplementedError
 
     class Factory(Protocol):
 

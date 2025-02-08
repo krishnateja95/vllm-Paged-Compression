@@ -8,7 +8,7 @@ from typing import (TYPE_CHECKING, Any, Dict, List, Literal, Mapping, Optional,
 import torch
 
 import vllm.envs as envs
-from vllm.config import (CacheConfig, CompilationConfig, ConfigFormat,
+from vllm.config import (PagedEvictConfig, CacheConfig, CompilationConfig, ConfigFormat,
                          DecodingConfig, DeviceConfig, HfOverrides,
                          KVTransferConfig, LoadConfig, LoadFormat, LoRAConfig,
                          ModelConfig, ObservabilityConfig, ParallelConfig,
@@ -198,6 +198,16 @@ class EngineArgs:
     kv_transfer_config: Optional[KVTransferConfig] = None
 
     generation_config: Optional[str] = None
+    
+    # Paged Eviction related configs
+    enable_paged_eviction: Optional[bool] = False
+    cache_prune_type: Optional[str] = "percentage"
+    prompt_evict_method: Optional[str] = "streamingLLM"
+    decode_evict_method: Optional[str] = "value_l2"
+    evict_size: Optional[int] = 8
+    cache_budget: Optional[int] = None
+    initial_blocks: Optional[int] = 1
+    num_blocks_merge: Optional[int] = 2
 
     def __post_init__(self):
         if not self.tokenizer:
@@ -955,6 +965,73 @@ class EngineArgs:
             "If set to 'auto', the generation config will be automatically "
             "loaded from model. If set to a folder path, the generation config "
             "will be loaded from the specified folder path.")
+        
+        parser.add_argument(
+            '--enable-paged-eviction',
+            action='store_true',
+            default=EngineArgs.enable_paged_eviction,
+            help='Enable paged eviction algorithm to prune the KV cache.'
+        )
+        
+        parser.add_argument(
+            '--cache-prune-type',
+            type=str,
+            choices=['percentage', 'budget'],
+            default=EngineArgs.cache_prune_type,
+            help='The KV Cache prune type'
+        ) 
+
+        parser.add_argument(
+            '--prompt-evict-method',
+            type=str,
+            choices=['cosine', 'key_l1', 'key_l2', 'value_l1', 'value_l2', 
+                     'key_l1_div_value_l1', 'key_l1_div_value_l2', 'key_l2_div_value_l1', 
+                     'key_l2_div_value_l2', 'value_l1_div_key_l1', 'value_l1_div_key_l2', 
+                     'value_l2_div_key_l1', 'value_l2_div_key_l2', 'value_l1_plus_key_l1', 
+                     'value_l2_plus_key_l2', 'streamingLLM', 'inverse_key_l1', 'inverse_key_l2'],
+            default=EngineArgs.prompt_evict_method,
+            help='The paged eviction method to use.'
+        )
+        
+        parser.add_argument(
+            '--decode-evict-method',
+            type=str,
+            choices=['cosine', 'key_l1', 'key_l2', 'value_l1', 'value_l2', 
+                     'key_l1_div_value_l1', 'key_l1_div_value_l2', 'key_l2_div_value_l1', 
+                     'key_l2_div_value_l2', 'value_l1_div_key_l1', 'value_l1_div_key_l2', 
+                     'value_l2_div_key_l1', 'value_l2_div_key_l2', 'value_l1_plus_key_l1', 
+                     'value_l2_plus_key_l2', 'streamingLLM', 'inverse_key_l1', 'inverse_key_l2'],
+            default=EngineArgs.decode_evict_method,
+            help='The paged eviction method to use.'
+        )
+
+        parser.add_argument(
+            '--evict-size',
+            type=int,
+            default=EngineArgs.evict_size,
+            help='The number of tokens to evict from a KV cache block'
+        )
+        
+        parser.add_argument(
+            '--cache-budget',
+            type=int,
+            default=EngineArgs.cache_budget,
+            help='The number of tokens to keep in the KV cache for each request after pruning'
+        )
+        
+        parser.add_argument(
+            '--initial-blocks',
+            type=int,
+            default=EngineArgs.initial_blocks,
+            help='The number of initial blocks to keep unprunned'
+        )
+        
+        parser.add_argument(
+            '--num-blocks-merge',
+            type=int,
+            default=EngineArgs.num_blocks_merge,
+            help='The number of blocks to merge'
+        )
 
         return parser
 
@@ -1050,6 +1127,18 @@ class EngineArgs:
                            "has been disabled.")
             self.enable_prefix_caching = False
 
+        paged_evict_config = None
+        if self.enable_paged_eviction:
+            paged_evict_config = PagedEvictConfig(
+                cache_prune_type=self.cache_prune_type,
+                prompt_evict_method=self.prompt_evict_method,
+                decode_evict_method=self.decode_evict_method,
+                evict_size=self.evict_size,
+                cache_budget=self.cache_budget,
+                initial_blocks=self.initial_blocks,
+                num_block_merge=self.num_blocks_merge
+            )
+            
         cache_config = CacheConfig(
             block_size=self.block_size,
             gpu_memory_utilization=self.gpu_memory_utilization,
@@ -1060,6 +1149,7 @@ class EngineArgs:
             sliding_window=model_config.get_sliding_window(),
             enable_prefix_caching=self.enable_prefix_caching,
             cpu_offload_gb=self.cpu_offload_gb,
+            paged_evict_config=paged_evict_config,
         )
         parallel_config = ParallelConfig(
             pipeline_parallel_size=self.pipeline_parallel_size,
@@ -1089,16 +1179,18 @@ class EngineArgs:
             if model_config.is_multimodal_model:
                 self.enable_chunked_prefill = bool(envs.VLLM_USE_V1)
 
-            elif use_long_context:
+            elif use_long_context and paged_evict_config is None:
                 is_gpu = device_config.device_type == "cuda"
                 use_sliding_window = (model_config.get_sliding_window()
                                       is not None)
                 use_spec_decode = self.speculative_model is not None
+                use_torch_sdpa = True if envs.VLLM_ATTENTION_BACKEND == "TORCH_SDPA" else False
                 if (is_gpu and not use_sliding_window and not use_spec_decode
                         and not self.enable_lora
                         and not self.enable_prompt_adapter
                         and model_config.runner_type != "pooling"
-                        and not current_platform.is_rocm()):
+                        and not current_platform.is_rocm()
+                        and not use_torch_sdpa):
                     self.enable_chunked_prefill = True
                     logger.warning(
                         "Chunked prefill is enabled by default for models with "
@@ -1157,6 +1249,9 @@ class EngineArgs:
             if self.enable_chunked_prefill and self.pipeline_parallel_size > 1:
                 raise ValueError("Multi-Step Chunked-Prefill is not supported "
                                  "for pipeline-parallel-size > 1")
+            if paged_evict_config is not None:
+                raise ValueError("Paged eviction is not supported with "
+                                 "multi-step (--num-scheduler-steps > 1)")
 
         # make sure num_lookahead_slots is set the higher value depending on
         # if we are using speculative decoding or multi-step

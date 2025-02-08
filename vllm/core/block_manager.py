@@ -12,6 +12,8 @@ from vllm.core.block.utils import check_no_caching_or_swa_for_blockmgr_encdec
 from vllm.core.interfaces import AllocStatus, BlockSpaceManager
 from vllm.sequence import Sequence, SequenceGroup, SequenceStatus
 from vllm.utils import Device
+from vllm.config import PagedEvictConfig
+from vllm.core.page_evict_kv_util import get_num_required_blocks_after_prune_promt, get_blocks_to_prune
 
 SeqId = int
 EncoderSeqId = str
@@ -65,6 +67,7 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         watermark: float = 0.01,
         sliding_window: Optional[int] = None,
         enable_caching: bool = False,
+        paged_evict_config: Optional[PagedEvictConfig] = None,
     ) -> None:
         self.block_size = block_size
         self.num_total_gpu_blocks = num_gpu_blocks
@@ -104,6 +107,8 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
             self.block_allocator, self.block_size, self.enable_caching)
         self._last_access_blocks_tracker = LastAccessBlocksTracker(
             self.block_allocator)
+        
+        self.paged_evict_config = paged_evict_config
 
     def can_allocate(self,
                      seq_group: SequenceGroup,
@@ -114,19 +119,25 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         check_no_caching_or_swa_for_blockmgr_encdec(self, seq_group)
 
         seq = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
-        num_required_blocks = BlockTable.get_num_required_blocks(
-            seq.get_token_ids(),
-            block_size=self.block_size,
-            num_lookahead_slots=num_lookahead_slots,
-        )
-
-        if seq_group.is_encoder_decoder():
-            encoder_seq = seq_group.get_encoder_seq()
-            assert encoder_seq is not None
-            num_required_blocks += BlockTable.get_num_required_blocks(
-                encoder_seq.get_token_ids(),
+        if self.paged_evict_config is None:
+            num_required_blocks = BlockTable.get_num_required_blocks(
+                seq.get_token_ids(),
                 block_size=self.block_size,
+                num_lookahead_slots=num_lookahead_slots,
             )
+
+            if seq_group.is_encoder_decoder():
+                encoder_seq = seq_group.get_encoder_seq()
+                assert encoder_seq is not None
+                num_required_blocks += BlockTable.get_num_required_blocks(
+                    encoder_seq.get_token_ids(),
+                    block_size=self.block_size,
+                )
+        else:
+            assert not seq_group.is_encoder_decoder(), "Paged eviction for encoder/decoder models is not supported."
+            assert num_lookahead_slots == 0, "Paged eviction for lookahead slots is not supported."
+            
+            num_required_blocks, _ = get_num_required_blocks_after_prune_promt(len(seq.get_token_ids()), self.paged_evict_config)
 
         if self.max_block_sliding_window is not None:
             num_required_blocks = min(num_required_blocks,
@@ -149,6 +160,7 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
             block_size=self.block_size,
             block_allocator=self.block_allocator,
             max_block_sliding_window=self.max_block_sliding_window,
+            paged_evict_config=self.paged_evict_config
         )
         if seq.get_token_ids():
             # NOTE: If there are any factors affecting the block besides
@@ -184,6 +196,9 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
             # Track seq
             self._last_access_blocks_tracker.add_seq(seq.seq_id)
 
+        if self.paged_evict_config is not None:
+            # Paged Eviction didn't support encoder-decoder models, so return here
+            return
         # Allocate cross-attention block table for encoder sequence
         #
         # NOTE: Here we assume that all sequences in the group have the same
@@ -229,6 +244,7 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
 
         num_free_gpu_blocks = self.block_allocator.get_num_free_blocks(
             Device.GPU)
+        # print(f"BlockManager: can_append_slots, num_touched_blocks={num_touched_blocks}, num_free_gpu_blocks={num_free_gpu_blocks}")
         return num_touched_blocks <= num_free_gpu_blocks
 
     def append_slots(
@@ -514,3 +530,31 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         cached in the block manager for the sequence.
         """
         return self._computed_blocks_tracker.get_num_cached_tokens(seq)
+    
+    def prune_seq_kv_cache(self, seq: Sequence) -> None:
+        pass
+    
+    def mark_part_blocks_to_be_released(self, seq: Sequence) -> None:
+        if not self.enable_caching and self.paged_evict_config is not None:
+            # get the block table
+            block_table = self.block_tables[seq.seq_id]
+            # check if need to prune the KV cache
+            # print(f"BlockManager: mark_part_blocks_to_be_released, seq_len={seq.data.get_len()}, original_block_size={self.paged_evict_config.original_block_size}")
+            if (seq.data.get_len() % self.paged_evict_config.original_block_size) == 0:
+                # get the block_ids that need to be prunned
+                # (TODO: Modify)get KV cache len,
+                s_block_idx, e_block_idx, _ = get_blocks_to_prune(self.paged_evict_config, block_table.get_seq_kv_len())
+                # print(f"BlockManager: mark_part_blocks_to_be_released, s_block_idx={s_block_idx}, e_block_idx={e_block_idx}")
+                if s_block_idx != -1:
+                    block_table.mark_part_blocks_to_be_released(s_block_idx, e_block_idx)
+                
+    def get_seq_kv_len(self, seq: Sequence) -> int:
+        return self.block_tables[seq.seq_id].get_seq_kv_len()
+    
+    def free_released_blocks(self, seq: Sequence) -> None:
+        # get the block table
+        block_table = self.block_tables[seq.seq_id]
+        if block_table.has_blocks_to_be_release:
+            # free the released blocks
+            block_table.free_released_blocks()
+        

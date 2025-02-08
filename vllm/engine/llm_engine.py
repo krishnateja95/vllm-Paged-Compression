@@ -239,6 +239,7 @@ class LLMEngine:
             use_cached_outputs,
         )
 
+        print(f"Initializing an LLM engine: block_size = {self.cache_config.block_size}, evict_size = {self.cache_config.paged_evict_config.evict_size if self.cache_config.paged_evict_config else 0}")
         self.log_stats = log_stats
         self.use_cached_outputs = use_cached_outputs
 
@@ -414,6 +415,7 @@ class LLMEngine:
         start = time.time()
         num_gpu_blocks, num_cpu_blocks = (
             self.model_executor.determine_num_available_blocks())
+        # num_gpu_blocks, num_cpu_blocks = 1000, 1000 
 
         if self.cache_config.num_gpu_blocks_override is not None:
             num_gpu_blocks_override = self.cache_config.num_gpu_blocks_override
@@ -426,6 +428,7 @@ class LLMEngine:
         self.cache_config.num_gpu_blocks = num_gpu_blocks
         self.cache_config.num_cpu_blocks = num_cpu_blocks
 
+        print(f"In LLMEngine, num_gpu_blocks = {num_gpu_blocks}, num_cpu_blocks = {num_cpu_blocks}")
         self.model_executor.initialize_cache(num_gpu_blocks, num_cpu_blocks)
         elapsed = time.time() - start
         logger.info(("init engine (profile, create kv cache, "
@@ -1437,7 +1440,10 @@ class LLMEngine:
             # Check if need to run the usual non-async path
             if not allow_async_output_proc:
                 self._process_model_outputs(ctx=ctx)
+                # print(f"Finished processing model outputs in non-async mode. len(seq_group_metadata_list)) = {len(seq_group_metadata_list)}", )
 
+                for scheduler in self.scheduler:
+                    scheduler.notify_step_done()
                 # Log stats.
                 self.do_log_stats(scheduler_outputs, outputs)
 

@@ -54,7 +54,12 @@ class Attention(nn.Module):
 
         if cache_config is not None:
             kv_cache_dtype = cache_config.cache_dtype
-            block_size = cache_config.block_size
+            if cache_config.paged_evict_config is None:
+                # Paged evict is disabled
+                block_size = cache_config.block_size
+            else:
+                # Paged evict is enabled
+                block_size = cache_config.paged_evict_config.compressed_block_size
             is_attention_free = cache_config.is_attention_free
         else:
             kv_cache_dtype = "auto"
@@ -96,7 +101,8 @@ class Attention(nn.Module):
         impl_cls = attn_backend.get_impl_cls()
         self.impl = impl_cls(num_heads, head_size, scale, num_kv_heads,
                              alibi_slopes, sliding_window, kv_cache_dtype,
-                             blocksparse_params, logits_soft_cap)
+                             blocksparse_params, logits_soft_cap,
+                             cache_config = cache_config)
         self.num_heads = num_heads
         self.head_size = head_size
         self.num_kv_heads = num_kv_heads

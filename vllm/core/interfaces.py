@@ -125,3 +125,19 @@ class BlockSpaceManager(ABC):
     @abstractmethod
     def get_num_cached_tokens(self, seq: Sequence) -> int:
         pass
+    
+    @abstractmethod
+    def prune_seq_kv_cache(self, seq: Sequence) -> None:
+        pass
+    
+    @abstractmethod
+    def mark_part_blocks_to_be_released(self, seq: Sequence) -> None:
+        pass
+    
+    @abstractmethod
+    def get_seq_kv_len(self, seq: Sequence) -> int:
+        pass
+    
+    @abstractmethod
+    def free_released_blocks(self, seq: Sequence) -> None:
+        pass

@@ -889,7 +889,14 @@ class PrefixCachingBlock(Block):
         assert (prev_block_hash is None) == is_first_block
         return hash((is_first_block, prev_block_hash, *cur_block_token_ids,
                      extra_hash))
-
+        
+    @property
+    def is_to_be_release(self) -> bool:
+        return False
+    
+    @is_to_be_release.setter
+    def is_to_be_release(self, value: bool):
+        pass
 
 class ComputedBlocksTracker:
     """

@@ -61,6 +61,8 @@ from vllm.worker.model_runner_base import (
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionBackend
 
+from vllm.core.page_evict_kv_util import get_blocks_to_prune
+
 logger = init_logger(__name__)
 
 LORA_WARMUP_RANK = 8
@@ -255,6 +257,9 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
             reinit: bool = False,
             reinit_use_defaults: bool = False,
             encoder_seq_len: int = 0,
+            
+            seq_kv_lens: Optional[Dict[int, int]] = None,
+            # target_block_tables: Optional[Dict[int, List[int]]] = None,
         ):
             if reinit:
                 assert len(self.seq_ids) == len(seq_ids)  # type: ignore
@@ -377,6 +382,14 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
             self.multi_modal_kwargs = multi_modal_kwargs
             self.multi_modal_placeholder_maps = multi_modal_placeholder_maps
             self.prefix_cache_hit = prefix_cache_hit
+            self.seq_kv_lens = seq_kv_lens
+            self.seq_kv_lens_before_prune = (
+                None if seq_kv_lens is None else {k: v for k, v in seq_kv_lens.items()}
+            ) 
+            self.target_block_tables = (
+                None if self.block_tables is None 
+                else {k: v.copy() for k, v in self.block_tables.items()}
+            )
 
             self.n_seqs = len(self.seq_ids)
 
@@ -499,6 +512,7 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
         else:
             context_len = seq_data.get_num_computed_tokens()
 
+        # print(f"ModelInputForGPUBuilder._compute_lens: seq_len={seq_len}, context_len={context_len}, token_chunk_size={token_chunk_size}")
         # Compute tokens.
         tokens = seq_data.get_token_ids()[context_len:seq_len]
         token_types = seq_group_metadata.token_type_ids
@@ -511,7 +525,24 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
         inter_data.token_types[seq_idx].extend(
             token_types if token_types else [])
         inter_data.query_lens[seq_idx] = seq_len - context_len
+        # print(f"ModelInputForGPUBuilder._compute_lens___1: seq_lens={inter_data.seq_lens[seq_idx]}, "
+            #   f"context_lens={inter_data.context_lens[seq_idx]}, query_lens={inter_data.query_lens[seq_idx]}")
 
+        # update seq_kv_lens
+        if self.runner.cache_config.paged_evict_config is not None:
+            # paged evict is enabled
+            paged_evict_config = self.runner.cache_config.paged_evict_config
+            if ((not inter_data.is_prompt) and 
+                (seq_len %  paged_evict_config.original_block_size) == 0):
+                seq_id = inter_data.seq_ids[seq_idx]
+                # print(f"ModelInputForGPUBuilder._compute_lens___2: seq_kv_lens={inter_data.seq_kv_lens[seq_id]}, inter_data.seq_lens={inter_data.seq_lens}")
+                s_block_idx,e_block_idx, pruned_tokens = get_blocks_to_prune(paged_evict_config, inter_data.seq_kv_lens[seq_id]) 
+                # print(f"ModelInputForGPUBuilder._compute_lens___2: seq_kv_lens={inter_data.seq_kv_lens[seq_id]}, pruned_tokens={pruned_tokens}") 
+                inter_data.seq_kv_lens[seq_id] -= pruned_tokens
+                # print(f"ModelInputForGPUBuilder._compute_lens___2: seq_kv_lens={inter_data.seq_kv_lens[seq_id]}")
+                del inter_data.target_block_tables[seq_id][s_block_idx:e_block_idx] 
+                # print(f"ModelInputForGPUBuilder._compute_lens___2: target_block_tables={inter_data.target_block_tables}, block_tables={inter_data.block_tables}")
+        
         if seq_data.mrope_position_delta is not None:
             if inter_data.mrope_input_positions is None:
                 inter_data.mrope_input_positions = [None] * inter_data.n_seqs
@@ -728,6 +759,7 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
             assert n_seqs == 1
             self.decode_only = False
 
+        # print(f"ModelInputForGPUBuilder.add_seq_group: n_seqs={n_seqs}, is_promt={is_prompt}, block_tables = {seq_group_metadata.block_tables}, computed_block_nums = {seq_group_metadata.computed_block_nums}")
         encoder_seq_len = 0
 
         if self.runner.model_config.is_encoder_decoder:
@@ -741,7 +773,8 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
             computed_block_nums=seq_group_metadata.computed_block_nums,
             reinit=True,
             reinit_use_defaults=True,
-            encoder_seq_len=encoder_seq_len)
+            encoder_seq_len=encoder_seq_len,
+            seq_kv_lens=seq_group_metadata.seq_kv_lens)
 
         self.inter_data_list.append(inter_data)
 
@@ -1015,7 +1048,13 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
 
         self.kv_cache_dtype = kv_cache_dtype
         self.sliding_window = model_config.get_sliding_window()
-        self.block_size = cache_config.block_size
+        if cache_config.paged_evict_config is None:
+            self.block_size = cache_config.block_size
+        else:
+            if cache_config.paged_evict_config.cache_prune_type == "percentage":
+                self.block_size = cache_config.paged_evict_config.compressed_block_size
+            else:
+                self.block_size = cache_config.block_size
         self.max_seq_len_to_capture = self.model_config.max_seq_len_to_capture
         self.max_batchsize_to_capture = \
             self.vllm_config.compilation_config.max_capture_size

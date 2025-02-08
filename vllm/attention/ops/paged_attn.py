@@ -126,6 +126,7 @@ class PagedAttention:
         use_v1 = (max_seq_len <= 8192
                   and (max_num_partitions == 1 or num_seqs * num_heads > 512))
 
+        # print(f"max_seq_len: {max_seq_len}, max_num_partitions: {max_num_partitions}, num_seqs * num_heads = {num_seqs * num_heads}, use_v1: {use_v1}")
         if use_v1:
             # Run PagedAttention V1.
             ops.paged_attention_v1(

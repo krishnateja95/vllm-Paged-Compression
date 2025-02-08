@@ -427,3 +427,11 @@ class NullBlock(Block):
     @property
     def content_hash(self):
         return self._proxy.content_hash
+    
+    @property
+    def is_to_be_release(self) -> bool:
+        raise False
+    
+    @is_to_be_release.setter
+    def is_to_be_release(self, value: bool):
+        pass

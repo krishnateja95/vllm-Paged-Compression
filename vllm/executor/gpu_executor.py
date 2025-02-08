@@ -75,8 +75,24 @@ class GPUExecutor(ExecutorBase):
         # remains to abstract away the device for non-GPU configurations.
         logger.info("# GPU blocks: %d, # CPU blocks: %d", num_gpu_blocks,
                     num_cpu_blocks)
-        max_concurrency = (num_gpu_blocks * self.cache_config.block_size /
-                           self.model_config.max_model_len)
+        if self.cache_config.paged_evict_config is None:
+            # Paged Eviction is disabled
+            max_concurrency = (num_gpu_blocks * self.cache_config.block_size /
+                            self.model_config.max_model_len)
+        else:
+            if self.cache_config.paged_evict_config.cache_prune_type == "percentage":
+                # Paged Eviction is enabled
+                compressed_block_size = self.cache_config.paged_evict_config.compressed_block_size
+                # TODO: Confirm with Krishna if this is the correct formula
+                unprunned_blocks = self.cache_config.paged_evict_config.initial_blocks + self.cache_config.paged_evict_config.compression_rate
+                # 4 / (self.cache_config.block_size / compressed_block_size) # because only the first 2 compressed blocks and the last 2 compressed blocks are important.
+                prunned_tokens = num_gpu_blocks - unprunned_blocks
+                max_concurrency = (((unprunned_blocks * compressed_block_size) + 
+                                    (prunned_tokens * self.cache_config.block_size)) / self.model_config.max_model_len)
+            else:
+                # the cache_budget method (TODO: Confirm, this may noe correct)
+                max_concurrency = (num_gpu_blocks * self.cache_config.block_size / self.model_config.max_model_len)
+            
         logger.info("Maximum concurrency for %s tokens per request: %.2fx",
                     self.model_config.max_model_len, max_concurrency)
 

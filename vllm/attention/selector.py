@@ -136,11 +136,14 @@ def _cached_get_attn_backend(
             ROCmFlashAttentionBackend)
         return ROCmFlashAttentionBackend
     elif backend == _Backend.TORCH_SDPA:
-        assert current_platform.is_cpu(), RuntimeError(
-            "Torch SDPA backend is only used for the CPU device.")
-        logger.info("Using Torch SDPA backend.")
-        from vllm.attention.backends.torch_sdpa import TorchSDPABackend
-        return TorchSDPABackend
+        if current_platform.is_cpu(): 
+            logger.info("Using Torch SDPA backend.")
+            from vllm.attention.backends.torch_sdpa import TorchSDPABackend
+            return TorchSDPABackend
+        else:
+            logger.info("Using Torch CUDA SDPA backend.")
+            from vllm.attention.backends.torch_cuda_sdpa import TorchCUDASDPABackend
+            return TorchCUDASDPABackend
     elif backend == _Backend.OPENVINO:
         logger.info("Using OpenVINO Attention backend.")
         from vllm.attention.backends.openvino import OpenVINOAttentionBackend
