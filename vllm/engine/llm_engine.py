@@ -428,7 +428,7 @@ class LLMEngine:
         self.cache_config.num_gpu_blocks = num_gpu_blocks
         self.cache_config.num_cpu_blocks = num_cpu_blocks
 
-        print(f"In LLMEngine, num_gpu_blocks = {num_gpu_blocks}, num_cpu_blocks = {num_cpu_blocks}")
+        # print(f"In LLMEngine, num_gpu_blocks = {num_gpu_blocks}, num_cpu_blocks = {num_cpu_blocks}")
         self.model_executor.initialize_cache(num_gpu_blocks, num_cpu_blocks)
         elapsed = time.time() - start
         logger.info(("init engine (profile, create kv cache, "

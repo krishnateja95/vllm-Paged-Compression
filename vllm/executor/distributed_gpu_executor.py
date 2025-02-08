@@ -44,7 +44,7 @@ class DistributedGPUExecutor(GPUExecutor):
         num_gpu_blocks = min(b[0] for b in num_blocks)
         num_cpu_blocks = min(b[1] for b in num_blocks)
 
-        print(f"In DistributedGPUExecutor, num_gpu_blocks = {num_gpu_blocks}, num_cpu_blocks={num_cpu_blocks}")
+        # print(f"In DistributedGPUExecutor, num_gpu_blocks = {num_gpu_blocks}, num_cpu_blocks={num_cpu_blocks}")
         return num_gpu_blocks, num_cpu_blocks
 
     def initialize_cache(self, num_gpu_blocks: int,
