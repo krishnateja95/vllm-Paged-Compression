@@ -679,7 +679,34 @@ class TorchCUDASDPAMetadataBuilder(
             cloned_block_tables=target_block_tables,
             seq_kv_lens_before_prune=self.seq_kv_lens_before_prune,
         )
-        
+
+###################################################################################################
+class CudaStreamManager:
+    """Manage a fixed size of streams for each device"""
+    _instances: Dict[str, "CudaStreamManager"] = {}  # Stores manager instances per device
+    
+    def __init__(self, device_id: str, num_streams: int):
+        self.device_id = device_id
+        self.num_streams = num_streams
+        self.streams = [torch.cuda.Stream(device=device_id) for _ in range(num_streams)]
+    
+    @staticmethod
+    def get_instance(device_id: str) -> "CudaStreamManager":
+        """
+        Returns the singleton instance of CudaStreamManager for the given device.
+        Creates it if it does not exist.
+        """
+        if device_id not in CudaStreamManager._instances:
+            num_streams = 8
+            CudaStreamManager._instances[device_id] = CudaStreamManager(device_id, num_streams)
+        return CudaStreamManager._instances[device_id]
+    
+    def get_streams(self) -> List[torch.cuda.Stream]:
+        """
+        Returns the list of CUDA streams for the given device.
+        Ensures that streams are created only once.
+        """
+        return self.streams
     
 ####################################################################################################
 class TorchCUDASDPABackendImpl(AttentionImpl[TorchCUDASDPAMetadata]):
@@ -731,6 +758,7 @@ class TorchCUDASDPABackendImpl(AttentionImpl[TorchCUDASDPAMetadata]):
         self.kv_cache_pruner = None
         self.cache_config:CacheConfig = kwargs.get('cache_config', None)
         self.enabled_paged_eviction = False
+        self.streams = None
         if (self.cache_config is not None and 
             self.cache_config.paged_evict_config is not None):
             self.enabled_paged_eviction = True
@@ -744,7 +772,9 @@ class TorchCUDASDPABackendImpl(AttentionImpl[TorchCUDASDPAMetadata]):
                                 self.paged_evict_config.cache_budget,           
                                 self.paged_evict_config.initial_blocks,
                                 self.paged_evict_config.num_block_merge,
-                                )
+                                ) 
+            self.stream_manager = CudaStreamManager.get_instance(f"cuda:{torch.cuda.current_device()}")
+            self.streams = self.stream_manager.get_streams()
 
     def forward(
         self,
@@ -828,13 +858,11 @@ class TorchCUDASDPABackendImpl(AttentionImpl[TorchCUDASDPAMetadata]):
                     if is_pruned:
                         if prunned_keys:
                             prune_end = time.perf_counter()
-                            # Concat prunned keys, prunned_values to the input key, value
-                            # tmp_key, tmp_value = torch.cat([key] + prunned_keys, dim=0), torch.cat([value] + prunned_values, dim=0)
+                            # Concat prunned keys, prunned_values to the input key, value 
                             tmp_key = torch.cat([key, *prunned_keys], dim=0)
                             tmp_value = torch.cat([value, *prunned_values], dim=0)
                             merge_end = time.perf_counter()
                             # Concat the prunned_kv_slot_mapping to the existing slot_mapping
-                            # slot_mapping = torch.cat([attn_metadata.slot_mapping] + prunned_kv_slot_mapping, dim=0)
                             slot_mapping = torch.cat([attn_metadata.slot_mapping, *prunned_kv_slot_mapping], dim=0)
                             merge_slot_end = time.perf_counter()
                             logger.info(f"Prune decode requests with prune_dur={prune_end - start:.6f} merge_dur={merge_end - prune_end:.6f} "\
@@ -934,13 +962,6 @@ class TorchCUDASDPABackendImpl(AttentionImpl[TorchCUDASDPAMetadata]):
                 seq_lens_arg = decode_meta.seq_kv_lens_tensor
                 block_tables_arg = decode_meta.cloned_block_tables
             
-            # print(f"***Before PagedAttention.forward_decode self.num_kv_heads = {self.num_kv_heads}, "
-            #       f"prefill_query_tokens = {attn_metadata.num_prefill_tokens}, "
-            #       f"decode_query_tokens={attn_metadata.num_decode_tokens},"
-            #       f"seq_lens_arg={seq_lens_arg}, max_seq_len_arg={max_seq_len_arg}, "
-            #       f"block_tables_arg={block_tables_arg}, decode_meta.cloned_block_tables = {decode_meta.cloned_block_tables}, seq_lens = {attn_metadata.decode_metadata.seq_lens},"
-            #       f"seq_kv_lens = {attn_metadata.decode_metadata.seq_kv_lens},", flush=True) 
-        
             output[attn_metadata.num_prefill_tokens:] = PagedAttention.forward_decode(
                 query[attn_metadata.num_prefill_tokens:],
                 key_cache,
@@ -1076,52 +1097,36 @@ class TorchCUDASDPABackendImpl(AttentionImpl[TorchCUDASDPAMetadata]):
     #     logger.info(f"*********Prune {len(attn_metadata.seq_lens)} requests cost {sum(durs):.6f} seconds, durs={durs}")
     #     return torch.cat(pruned_keys, dim=0), torch.cat(pruned_values, dim=0)
     
-    # Sequential Implementation --- Version 2    
-    # def _prune_prompts_keys_and_values(self, key: torch.Tensor, value: torch.Tensor, attn_metadata: TorchCUDASDPAMetadata):
-    #     num_requests = len(attn_metadata.seq_lens)
-    #     pruned_keys, pruned_values = [None] * num_requests, [None] * num_requests
-    #     start = time.perf_counter()
-    #     durs = [0] * num_requests
-        
-    #     seq_lens = attn_metadata.seq_lens
-    #     key_splits = torch.split(key, seq_lens, dim=0)
-    #     value_splits = torch.split(value, seq_lens, dim=0)
-        
-    #     for i, (k, v) in enumerate(zip(key_splits, value_splits)):
-    #         # seq_len is the query length of each request for the prefill phase
-    #         prune_start = time.perf_counter()
-    #         prunned_key, prunned_value = self.kv_cache_pruner.prune_prompt(k, v)
-    #         durs[i] = time.perf_counter() - prune_start
-    #         pruned_keys[i] = prunned_key
-    #         pruned_values[i] = prunned_value
-        
-    #     logger.info(f"*********Prune {num_requests} requests cost {time.perf_counter()-start:.6f} seconds, durs={durs}")
-    #     return torch.cat(pruned_keys, dim=0), torch.cat(pruned_values, dim=0)
     
     # Parallel Implementation --- Version 2
     def _prune_prompts_keys_and_values(self, key: torch.Tensor, value: torch.Tensor, attn_metadata: TorchCUDASDPAMetadata):
-        num_streams = 8 # use a fixed number of streams to avoid too many streams
+        # start = time.perf_counter()
+        num_streams = len(self.streams)
         num_requests = len(attn_metadata.seq_lens)
-        streams = [torch.cuda.Stream() for _ in range(num_streams)]  # Create the given number of CUDA streams
         pruned_keys, pruned_values = [None] * num_requests, [None] * num_requests  # Pre-allocate lists
         
         s_idx, e_idx = 0, 0
         # Assign requests to streams in a round-robin fashion and run the given number of streams in parallel
         for i, seq_len in enumerate(attn_metadata.seq_lens):
             e_idx += seq_len
-            stream=streams[i % num_streams]  # Distribute across limited streams
+            stream=self.streams[i % num_streams]  # Distribute across limited streams
             with torch.cuda.stream(stream):  # Switch to a separate CUDA stream
                 pruned_keys[i], pruned_values[i] = self.kv_cache_pruner.prune_prompt(
                     key[s_idx:e_idx, :, :], value[s_idx:e_idx, :, :]
                 )
             s_idx = e_idx
         
-        for stream in streams:
-            torch.cuda.default_stream().wait_stream(stream)
-
-        # Now safe to concatenate without race conditions
+        # end_1 = time.perf_counter()
+        
+        for stream in self.streams:
+            torch.cuda.current_stream().wait_stream(stream)
+        
         pruned_keys = torch.cat(pruned_keys, dim=0)
         pruned_values = torch.cat(pruned_values, dim=0)
+         
+        # end_2 = time.perf_counter()
+        # logger.info(f"*********Prune {num_requests} prompts requests: end_1={end_1-start:.6f} end_2={end_2-start:.6f} on stream {torch.cuda.current_stream()}"
+                    # f" prunned_keys.shape={pruned_keys.shape}, prunned_values.shape={pruned_values.shape}")
 
         return pruned_keys, pruned_values
     
@@ -1138,7 +1143,7 @@ class TorchCUDASDPABackendImpl(AttentionImpl[TorchCUDASDPAMetadata]):
     #         if seq_len % self.cache_config.block_size == 0:
     #             cur_seq_kv_len = attn_metadata.seq_kv_lens_before_prune[id] 
     #             # the curren block is full, we need to prun the oldest block from the KV cache.
-    #             s_idx_bt, e_idx_bt, _ = self.kv_cache_pruner.get_blocks_to_prune_and_merge_decode(cur_seq_kv_len)
+    #             s_idx_bt, e_idx_bt, prune_tokens = self.kv_cache_pruner.get_blocks_to_prune_and_merge_decode(cur_seq_kv_len)
     #             # print(f"+++++++TorchCUDASDPABackendImpl---start to prune decode request. seq_len={attn_metadata.seq_kv_lens[id]}, seq_kv_len_before_prune = {seq_kv_len_before_prune}, seq_kv_len={seq_kv_len}, s_idx_bt={s_idx_bt}, e_idx_bt={e_idx_bt}")
     #             if s_idx_bt == -1:
     #                 continue
@@ -1155,27 +1160,29 @@ class TorchCUDASDPABackendImpl(AttentionImpl[TorchCUDASDPAMetadata]):
     #                 tmp_kvs = torch.zeros(tmp_kvs_shape, dtype=kv_cache_dtype, device=kv_cache_device)
     #                 # print(f"+++++++TorchCUDASDPABackendImpl---before . tmp_kv_cache.shape={tmp_kvs.shape}")
     #                 # copy the corresponding blocks to the temp memory
-    #                 for idx in range(num_tmp_blocks):
-    #                     src_idx = attn_metadata.decode_metadata.block_tables[id][s_idx_bt + idx] 
-    #                     tmp_kvs[:, idx, :] = kv_cache[:, src_idx, :]
+    #                 # for idx in range(num_tmp_blocks):
+    #                 #     src_idx = attn_metadata.decode_metadata.block_tables[id][s_idx_bt + idx] 
+    #                 #     tmp_kvs[:, idx, :] = kv_cache[:, src_idx, :]
+    #                 src_indices = attn_metadata.decode_metadata.block_tables[id][s_idx_bt: s_idx_bt + num_tmp_blocks]
+    #                 tmp_kvs[:, :num_tmp_blocks, :] = kv_cache[:, src_indices, :]
     #                 # then prune the tmp_kv_cache
     #                 # print(f"+++++++TorchCUDASDPABackendImpl---1. tmp_kv_cache.shape={tmp_kvs.shape}")
     #                 tmp_key = tmp_kvs[0].view(-1, self.num_kv_heads, self.head_size)
     #                 tmp_value = tmp_kvs[1].view(-1, self.num_kv_heads, self.head_size)
     #                 # print(f"+++++++TorchCUDASDPABackendImpl---2. tmp_key.shape={tmp_key.shape}, tmp_value.shape={tmp_value.shape}")
-    #                 tmp_key, tmp_value=self.kv_cache_pruner.prune_oldest_block(tmp_key, tmp_value)
+    #                 tmp_key, tmp_value=self.kv_cache_pruner.prune_oldest_block(tmp_key, tmp_value, prune_tokens)
     #                 # print(f"+++++++TorchCUDASDPABackendImpl---3 after prune. tmp_key.shape={tmp_key.shape}, tmp_value.shape={tmp_value.shape}")
     #                 # create the slotting_map for the tmp_key
-    #                 e_idx_t = s_idx_bt + (tmp_key.shape[0] // block_size)
-    #                 merge_block_ids = attn_metadata.decode_metadata.block_tables[id][s_idx_bt:e_idx_t]
-    #                 # Efficient list comprehension for small block_table but larger slot count
-    #                 slots = [
-    #                     block * block_size + i
-    #                     for block in merge_block_ids
-    #                     for i in range(block_size)
-    #                 ]
-                    
-    #                 tmp_slot_mapping = torch.tensor(slots, device=kv_cache_device, dtype=torch.long)
+    #                 num_blocks_after_prune = (num_tmp_blocks - (prune_tokens // block_size))
+    #                 if num_blocks_after_prune == 1:
+    #                     block_idx = src_indices[0] 
+    #                     tmp_slot_mapping = torch.arange(block_idx * block_size, (block_idx + 1) * block_size, 
+    #                                     device=kv_cache_device, dtype=torch.long)
+    #                 else: 
+    #                     # num_blocks_after_prune > 1   
+    #                     merge_block_ids = src_indices[:num_blocks_after_prune]
+    #                     block_offsets = torch.arange(block_size, device=kv_cache_device, dtype=torch.long)
+    #                     tmp_slot_mapping = (merge_block_ids[:, None] * block_size + block_offsets).flatten()
                     
     #                 pruned_keys.append(tmp_key)
     #                 pruned_values.append(tmp_value)
@@ -1188,31 +1195,31 @@ class TorchCUDASDPABackendImpl(AttentionImpl[TorchCUDASDPAMetadata]):
     def _prune_decode_reqs_oldest_block(self, kv_cache: torch.Tensor, attn_metadata: TorchCUDASDPAMetadata):
         # start_1 = time.perf_counter()
         kv_cache_device, kv_cache_dtype = kv_cache.device, kv_cache.dtype
-        num_streams = 8 # use a fixed number of streams to avoid too many streams
-        streams = [torch.cuda.Stream() for _ in range(num_streams)]  # Create the given number of CUDA streams
-        active_streams = []  # Track streams that were actually used for pruning
+        num_streams = len(self.streams) # use a fixed number of streams to avoid too many streams
+        active_streams = {}  # Track streams that were actually used for pruning
         
         pruned_keys, pruned_values, prunned_kvs_slot_mapping = [], [], []
-        is_pruned = False
         
+        is_pruned = False
         for id, seq_len in enumerate(attn_metadata.seq_lens):
             if seq_len % self.cache_config.block_size != 0:
                 continue
             cur_seq_kv_len = attn_metadata.seq_kv_lens_before_prune[id]
-            s_idx_bt, e_idx_bt, _ = self.kv_cache_pruner.get_blocks_to_prune_and_merge_decode(cur_seq_kv_len)
+            s_idx_bt, e_idx_bt, prune_tokens = self.kv_cache_pruner.get_blocks_to_prune_and_merge_decode(cur_seq_kv_len)
             if s_idx_bt == -1:
                 continue ## No pruning needed, skip further processing
             
             # This request needs pruning, so allocate a stream for it
-            is_pruned = True
-            stream_id = len(active_streams) % num_streams  # Distribute only among needed streams
-            active_streams.append(streams[stream_id])  # Keep track of active streams
-            
+            is_pruned = True 
             if self.cache_config.paged_evict_config.decode_evict_method == "streamingLLM":
                 continue
             else:
+                stream_id = id % num_streams  # Distribute only among needed streams
+                if stream_id not in active_streams:
+                    active_streams[stream_id] = self.streams[stream_id]  # Keep track of active streams
+                
                 # Other prune approach
-                with torch.cuda.stream(streams[stream_id]):
+                with torch.cuda.stream(self.streams[stream_id]):
                     # start = time.perf_counter()
                     num_tmp_blocks = e_idx_bt - s_idx_bt
                     if self.cache_config.paged_evict_config.cache_prune_type == "percentage":
@@ -1223,27 +1230,28 @@ class TorchCUDASDPABackendImpl(AttentionImpl[TorchCUDASDPAMetadata]):
                                             block_size, self.num_kv_heads, self.head_size)
                     tmp_kvs = torch.empty(tmp_kvs_shape, dtype=kv_cache_dtype, device=kv_cache_device)
                     # copy the corresponding blocks to the temp memory
-                    # src_indices = [attn_metadata.decode_metadata.block_tables[id][s_idx_bt + idx] for idx in range(num_tmp_blocks)]
-                    src_indices = torch.tensor(
-                                    [attn_metadata.decode_metadata.block_tables[id][s_idx_bt + idx] for idx in range(num_tmp_blocks)],
-                                    device=kv_cache_device,
-                                    dtype=torch.long
-                                )
+                    src_indices = attn_metadata.decode_metadata.block_tables[id][s_idx_bt: s_idx_bt + num_tmp_blocks]
                     tmp_kvs[:, :num_tmp_blocks, :] = kv_cache[:, src_indices, :]
                     # then prune the tmp_kv_cache
                     tmp_key = tmp_kvs[0].view(-1, self.num_kv_heads, self.head_size)
                     tmp_value = tmp_kvs[1].view(-1, self.num_kv_heads, self.head_size)
                     # end_1 = time.perf_counter()
                     # print(f"+++++++TorchCUDASDPABackendImpl---2. tmp_key.shape={tmp_key.shape}, tmp_value.shape={tmp_value.shape}")
-                    tmp_key, tmp_value=self.kv_cache_pruner.prune_oldest_block(tmp_key, tmp_value)
+                    tmp_key, tmp_value=self.kv_cache_pruner.prune_oldest_block(tmp_key, tmp_value, prune_tokens)
                     # end_2 = time.perf_counter()
                     # print(f"+++++++TorchCUDASDPABackendImpl---3. tmp_key.shape={tmp_key.shape}, tmp_value.shape={tmp_value.shape}")
                     # create the slotting_map for the tmp_key
-                    e_idx_t = s_idx_bt + (tmp_key.shape[0] // block_size)
-                    merge_block_ids = attn_metadata.decode_metadata.block_tables[id][s_idx_bt:e_idx_t] 
-                    block_offsets = torch.arange(block_size, device=kv_cache_device, dtype=torch.long)
-                    tmp_slot_mapping = merge_block_ids[:, None] * block_size + block_offsets
-                    tmp_slot_mapping = tmp_slot_mapping.flatten()
+                    
+                    num_blocks_after_prune = (num_tmp_blocks - (prune_tokens // block_size))
+                    if num_blocks_after_prune == 1:
+                        block_idx = src_indices[0] 
+                        tmp_slot_mapping = torch.arange(block_idx * block_size, (block_idx + 1) * block_size, 
+                                    device=kv_cache_device, dtype=torch.long)
+                    else: 
+                        # num_blocks_after_prune > 1   
+                        merge_block_ids = src_indices[:num_blocks_after_prune]
+                        block_offsets = torch.arange(block_size, device=kv_cache_device, dtype=torch.long)
+                        tmp_slot_mapping = (merge_block_ids[:, None] * block_size + block_offsets).flatten()
                     # end_3 = time.perf_counter()
                     pruned_keys.append(tmp_key)
                     pruned_values.append(tmp_value)
@@ -1253,8 +1261,8 @@ class TorchCUDASDPABackendImpl(AttentionImpl[TorchCUDASDPAMetadata]):
                     #       f"create_kv={end_1 - start:.6f} prune_dur={end_2 - end_1:.6f} slot_dur={end_3 - end_2:.6f} seconds") 
         
         #Ensure All Active Streams Complete Before Returning Results
-        for stream in active_streams:
-            torch.cuda.default_stream().wait_stream(stream)    
+        for stream in active_streams.values():
+            torch.cuda.current_stream().wait_stream(stream)
         
         # print(f"+++++++TorchCUDASDPABackendImpl---decode request cost={time.perf_counter() - start_1:.6f}")    
         return pruned_keys, pruned_values, prunned_kvs_slot_mapping, is_pruned     

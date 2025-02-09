@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 import math 
+import time
 
 class KVCachePruner:
     def __init__(self, cache_prune_type, prompt_evict_method, decode_evict_method, block_size, evict_size, 
@@ -135,6 +136,7 @@ class KVCachePruner:
 
 
     def prune_prompt(self, key_tensor, value_tensor):
+        # start = time.perf_counter()
         q_len, num_heads, head_dim = key_tensor.shape
         
         if self.prompt_evict_method == "streamingLLM":
@@ -201,7 +203,8 @@ class KVCachePruner:
                 value_tensor[middle_slice, :, :],
                 value_tensor[last_slice, :, :]
             ], dim=0)
-            
+            # end = time.perf_counter()
+            # print(f"Time taken to prune prompt blocks take {end - start:.6f} using streamingLLM on stream {torch.cuda.current_stream()}")
             return rejoined_key, rejoined_value 
         else:
             if self.cache_prune_type == "percentage":
@@ -274,7 +277,8 @@ class KVCachePruner:
                 pruned_middle_value,
                 value_tensor[last_slice, :, :]
             ], dim=0)
-            
+            # end = time.perf_counter()
+            # print(f"Time taken to prune prompt blocks take {end - start:.6f} using streamingLLM on stream {torch.cuda.current_stream()}")   
             return rejoined_key, rejoined_value
         
     def get_blocks_to_prune_and_merge_decode(self, seq_kv_len):
@@ -307,10 +311,10 @@ class KVCachePruner:
                     s_block_id = self.initial_blocks
                     e_block_id = self.initial_blocks + self.num_block_merge
                     prune_tokens = self.orig_block_size
-            
+         
         return s_block_id, e_block_id, prune_tokens
           
-    def prune_oldest_block(self, key_tensor, value_tensor):
+    def prune_oldest_block(self, key_tensor, value_tensor, prune_tokens):
         if self.decode_evict_method== "streamingLLM":
             # For vLLM, we just need to remove the block from the block_table, so do nothing here
             return None, None
@@ -318,10 +322,6 @@ class KVCachePruner:
             q_len, num_heads, head_dim = key_tensor.shape
             scores = self.get_score(key_tensor, value_tensor, self.decode_evict_method)
             # print(f"********scores.shape = {scores.shape}")
-            if self.cache_prune_type == "percentage":
-                prune_tokens = self.evict_size
-            else:
-                prune_tokens = self.orig_block_size
             # print(f"********Number of tokens to prune = {prune_tokens}")
             _, least_indices = torch.topk(scores, k=prune_tokens, largest=False, dim=0)
 
