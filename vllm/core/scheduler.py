@@ -361,14 +361,13 @@ class Scheduler:
                 sliding_window=self.cache_config.sliding_window,
                 enable_caching=self.cache_config.enable_prefix_caching)
         else:
-            if self.cache_config.paged_evict_config.cache_prune_type == "percentage":
-                block_size = self.cache_config.paged_evict_config.compressed_block_size
-            else:
-                # the cache_budget case
-                block_size = self.cache_config.block_size
-            
+            # if self.cache_config.paged_evict_config.cache_prune_type == "percentage":
+            #     block_size = self.cache_config.paged_evict_config.compressed_block_size
+            # else:
+            #     # the cache_budget case
+            #     block_size = self.cache_config.block_size 
             self.block_manager = BlockSpaceManagerImpl(
-                block_size=block_size,
+                block_size=self.cache_config.block_size,
                 num_gpu_blocks=num_gpu_blocks,
                 num_cpu_blocks=num_cpu_blocks,
                 sliding_window=self.cache_config.sliding_window,

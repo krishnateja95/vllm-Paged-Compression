@@ -38,7 +38,8 @@ class CacheEngine:
             parallel_config, LayerBlockType.attention)
         self.num_kv_heads = model_config.get_num_kv_heads(parallel_config)
 
-        self.block_size = self._get_block_size()
+        # self.block_size = self._get_block_size()
+        self.block_size = self.cache_config.block_size
          
         self.num_gpu_blocks = cache_config.num_gpu_blocks
         if self.num_gpu_blocks:
@@ -109,13 +110,14 @@ class CacheEngine:
         num_attention_layers = model_config.get_num_layers_by_block_type(
             parallel_config, LayerBlockType.attention)
 
-        if cache_config.paged_evict_config is None:
-            block_size = cache_config.block_size
-        else:
-            if cache_config.paged_evict_config.cache_prune_type == "percentage":
-                block_size = cache_config.paged_evict_config.compressed_block_size
-            else:
-                block_size = cache_config.block_size
+        # if cache_config.paged_evict_config is None:
+        #     block_size = cache_config.block_size
+        # else:
+        #     if cache_config.paged_evict_config.cache_prune_type == "percentage":
+        #         block_size = cache_config.paged_evict_config.compressed_block_size
+        #     else:
+        #         block_size = cache_config.block_size
+        block_size = cache_config.block_size
         
         key_cache_block = block_size * num_heads * head_size
         value_cache_block = key_cache_block
@@ -127,16 +129,17 @@ class CacheEngine:
         dtype_size = get_dtype_size(dtype)
         return dtype_size * total
 
-    def _get_block_size(self) -> int:
-        if self.cache_config.paged_evict_config is None:
-            # (Paged Eviction is disabled)
-            block_size = self.cache_config.block_size
-        else:
-            # (Paged Eviction is enabled)
-            if self.cache_config.paged_evict_config.cache_prune_type == "percentage":  
-                block_size = self.cache_config.paged_evict_config.compressed_block_size
-            else:
-                # cache_budget case
-                block_size = self.cache_config.block_size
+    # def _get_block_size(self) -> int:
+    #     if self.cache_config.paged_evict_config is None:
+    #         # (Paged Eviction is disabled)
+    #         block_size = self.cache_config.block_size
+    #     else:
+    #         # (Paged Eviction is enabled)
+    #         # if self.cache_config.paged_evict_config.cache_prune_type == "percentage":  
+    #         #     block_size = self.cache_config.paged_evict_config.compressed_block_size
+    #         # else:
+    #         #     # cache_budget case
+    #         #     block_size = self.cache_config.block_size
+    #         block_size = self.cache_config.block_size
         
-        return block_size
+    #     return block_size

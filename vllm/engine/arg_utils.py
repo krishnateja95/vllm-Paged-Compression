@@ -204,7 +204,8 @@ class EngineArgs:
     cache_prune_type: Optional[str] = "percentage"
     prompt_evict_method: Optional[str] = "streamingLLM"
     decode_evict_method: Optional[str] = "value_l2"
-    evict_size: Optional[int] = 8
+    # evict_size: Optional[int] = 8
+    evict_freq: Optional[int] = 2
     cache_budget: Optional[int] = None
     initial_blocks: Optional[int] = 1
     num_blocks_merge: Optional[int] = 2
@@ -1005,11 +1006,17 @@ class EngineArgs:
             help='The paged eviction method to use.'
         )
 
+        # parser.add_argument(
+        #     '--evict-size',
+        #     type=int,
+        #     default=EngineArgs.evict_size,
+        #     help='The number of tokens to evict from a KV cache block'
+        # )
         parser.add_argument(
-            '--evict-size',
+            '--evict-freq',
             type=int,
-            default=EngineArgs.evict_size,
-            help='The number of tokens to evict from a KV cache block'
+            default=EngineArgs.evict_freq,
+            help='How often to trigger eviction in terms of number of blocks'
         )
         
         parser.add_argument(
@@ -1133,7 +1140,7 @@ class EngineArgs:
                 cache_prune_type=self.cache_prune_type,
                 prompt_evict_method=self.prompt_evict_method,
                 decode_evict_method=self.decode_evict_method,
-                evict_size=self.evict_size,
+                evict_freq=self.evict_freq,
                 cache_budget=self.cache_budget,
                 initial_blocks=self.initial_blocks,
                 num_block_merge=self.num_blocks_merge

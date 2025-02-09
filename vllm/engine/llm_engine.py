@@ -239,7 +239,7 @@ class LLMEngine:
             use_cached_outputs,
         )
 
-        print(f"Initializing an LLM engine: block_size = {self.cache_config.block_size}, evict_size = {self.cache_config.paged_evict_config.evict_size if self.cache_config.paged_evict_config else 0}")
+        print(f"Initializing an LLM engine: block_size = {self.cache_config.block_size}, evict_freq = {self.cache_config.paged_evict_config.evict_freq if self.cache_config.paged_evict_config else -1}")
         self.log_stats = log_stats
         self.use_cached_outputs = use_cached_outputs
 

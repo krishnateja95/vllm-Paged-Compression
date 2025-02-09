@@ -533,15 +533,16 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
             # paged evict is enabled
             paged_evict_config = self.runner.cache_config.paged_evict_config
             if ((not inter_data.is_prompt) and 
-                (seq_len %  paged_evict_config.original_block_size) == 0):
+                (seq_len %  (paged_evict_config.original_block_size * paged_evict_config.evict_freq)) == 0):
                 seq_id = inter_data.seq_ids[seq_idx]
                 # print(f"ModelInputForGPUBuilder._compute_lens___2: seq_kv_lens={inter_data.seq_kv_lens[seq_id]}, inter_data.seq_lens={inter_data.seq_lens}")
                 s_block_idx,e_block_idx, pruned_tokens = get_blocks_to_prune(paged_evict_config, inter_data.seq_kv_lens[seq_id]) 
                 # print(f"ModelInputForGPUBuilder._compute_lens___2: seq_kv_lens={inter_data.seq_kv_lens[seq_id]}, pruned_tokens={pruned_tokens}") 
-                inter_data.seq_kv_lens[seq_id] -= pruned_tokens
-                # print(f"ModelInputForGPUBuilder._compute_lens___2: seq_kv_lens={inter_data.seq_kv_lens[seq_id]}")
-                del inter_data.target_block_tables[seq_id][s_block_idx:e_block_idx] 
-                # print(f"ModelInputForGPUBuilder._compute_lens___2: target_block_tables={inter_data.target_block_tables}, block_tables={inter_data.block_tables}")
+                if s_block_idx != -1:
+                    inter_data.seq_kv_lens[seq_id] -= pruned_tokens
+                    # print(f"ModelInputForGPUBuilder._compute_lens___2: seq_kv_lens={inter_data.seq_kv_lens[seq_id]}")
+                    del inter_data.target_block_tables[seq_id][s_block_idx:e_block_idx] 
+                    # print(f"ModelInputForGPUBuilder._compute_lens___2: target_block_tables={inter_data.target_block_tables}, block_tables={inter_data.block_tables}")
         
         if seq_data.mrope_position_delta is not None:
             if inter_data.mrope_input_positions is None:
@@ -1048,13 +1049,14 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
 
         self.kv_cache_dtype = kv_cache_dtype
         self.sliding_window = model_config.get_sliding_window()
-        if cache_config.paged_evict_config is None:
-            self.block_size = cache_config.block_size
-        else:
-            if cache_config.paged_evict_config.cache_prune_type == "percentage":
-                self.block_size = cache_config.paged_evict_config.compressed_block_size
-            else:
-                self.block_size = cache_config.block_size
+        # if cache_config.paged_evict_config is None:
+        #     self.block_size = cache_config.block_size
+        # else:
+        #     if cache_config.paged_evict_config.cache_prune_type == "percentage":
+        #         self.block_size = cache_config.paged_evict_config.compressed_block_size
+        #     else:
+        #         self.block_size = cache_config.block_size
+        self.block_size = cache_config.block_size
         self.max_seq_len_to_capture = self.model_config.max_seq_len_to_capture
         self.max_batchsize_to_capture = \
             self.vllm_config.compilation_config.max_capture_size

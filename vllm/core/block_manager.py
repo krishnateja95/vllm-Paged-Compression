@@ -540,7 +540,7 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
             block_table = self.block_tables[seq.seq_id]
             # check if need to prune the KV cache
             # print(f"BlockManager: mark_part_blocks_to_be_released, seq_len={seq.data.get_len()}, original_block_size={self.paged_evict_config.original_block_size}")
-            if (seq.data.get_len() % self.paged_evict_config.original_block_size) == 0:
+            if (seq.data.get_len() % (self.paged_evict_config.original_block_size * self.paged_evict_config.evict_freq)) == 0:
                 # get the block_ids that need to be prunned
                 # (TODO: Modify)get KV cache len,
                 s_block_idx, e_block_idx, _ = get_blocks_to_prune(self.paged_evict_config, block_table.get_seq_kv_len())

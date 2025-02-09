@@ -768,7 +768,7 @@ class TorchCUDASDPABackendImpl(AttentionImpl[TorchCUDASDPAMetadata]):
                                 self.paged_evict_config.prompt_evict_method,
                                 self.paged_evict_config.decode_evict_method,
                                 self.cache_config.block_size, 
-                                self.paged_evict_config.evict_size,
+                                self.paged_evict_config.evict_freq,
                                 self.paged_evict_config.cache_budget,           
                                 self.paged_evict_config.initial_blocks,
                                 self.paged_evict_config.num_block_merge,
@@ -796,9 +796,7 @@ class TorchCUDASDPABackendImpl(AttentionImpl[TorchCUDASDPAMetadata]):
             value: shape = [num_tokens, num_kv_heads * head_size]
             kv_cache = [2, num_blocks, block_size * num_kv_heads * head_size]
                 NOTE: kv_cache will be an empty tensor with shape [0]
-                for profiling run.
-                NOTE (Jie): 1) If paged_evict is enabled, block_size = compressed_block_sizes;
-                            2) If paged_evict is disabled, block_size = original_block_size 
+                for profiling run. 
             attn_metadata: Metadata for attention.
         Returns:
             shape = [num_tokens, num_heads * head_size]
@@ -1202,7 +1200,7 @@ class TorchCUDASDPABackendImpl(AttentionImpl[TorchCUDASDPAMetadata]):
         
         is_pruned = False
         for id, seq_len in enumerate(attn_metadata.seq_lens):
-            if seq_len % self.cache_config.block_size != 0:
+            if seq_len % (self.cache_config.block_size * self.paged_evict_config.evict_freq) != 0:
                 continue
             cur_seq_kv_len = attn_metadata.seq_kv_lens_before_prune[id]
             s_idx_bt, e_idx_bt, prune_tokens = self.kv_cache_pruner.get_blocks_to_prune_and_merge_decode(cur_seq_kv_len)
@@ -1222,10 +1220,11 @@ class TorchCUDASDPABackendImpl(AttentionImpl[TorchCUDASDPAMetadata]):
                 with torch.cuda.stream(self.streams[stream_id]):
                     # start = time.perf_counter()
                     num_tmp_blocks = e_idx_bt - s_idx_bt
-                    if self.cache_config.paged_evict_config.cache_prune_type == "percentage":
-                        block_size = self.cache_config.paged_evict_config.compressed_block_size
-                    else:
-                        block_size = self.cache_config.block_size
+                    block_size = self.cache_config.block_size
+                    # if self.cache_config.paged_evict_config.cache_prune_type == "percentage":
+                    #     block_size = self.cache_config.paged_evict_config.compressed_block_size
+                    # else:
+                    #     block_size = self.cache_config.block_size
                     tmp_kvs_shape = PagedAttention.get_kv_cache_shape(num_tmp_blocks, 
                                             block_size, self.num_kv_heads, self.head_size)
                     tmp_kvs = torch.empty(tmp_kvs_shape, dtype=kv_cache_dtype, device=kv_cache_device)
