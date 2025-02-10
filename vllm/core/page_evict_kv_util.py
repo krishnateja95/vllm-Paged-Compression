@@ -91,7 +91,7 @@ def get_blocks_to_prune(paged_evict_config: PagedEvictConfig, seq_kv_len: int):
             s_block_id = paged_evict_config.initial_blocks + 1
             e_block_id = paged_evict_config.initial_blocks + paged_evict_config.num_block_merge
             pruned_tokens = (paged_evict_config.num_block_merge - 1) * paged_evict_config.original_block_size
-            print(f"pruned_tokens={pruned_tokens}")
+            # print(f"pruned_tokens={pruned_tokens}")
         else:
             # For cache_budget case
             if seq_kv_len <= paged_evict_config.cache_budget:
