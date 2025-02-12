@@ -2,7 +2,7 @@
 # USE_EVICT_FREQ=0 means still use evict_size in paged_eviction. 1 means use evict_freq
 USE_EVICT_FREQ=1
 # import env vars
-source /home/jieye/acl25/vllm_env_vars
+source $HOME/acl25/vllm_env_vars
 
 # COMMON PARAMETERS
 INPUT_OUPUT_LENS=(1024 2048 4096 8192)
@@ -18,8 +18,8 @@ CACHE_TYPES=("percentage" "full-cache")
 BLOCK_SIZES=(16)
 TP=2
 
-BENCHMARK_SCRIPT_DIR="/home/jieye/acl25/vllm-Paged-Compression-v3/benchmarks/"
-LOG_DIR="/home/jieye/acl25/performance_logs/various_seqlens_tp${TP}/"
+BENCHMARK_SCRIPT_DIR="$HOME/acl25/vllm-Paged-Compression-v3/benchmarks/"
+LOG_DIR="$HOME/acl25/performance_logs/various_seqlens_tp${TP}/"
 
 #################################################################################
 # Helper functions

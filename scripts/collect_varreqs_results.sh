@@ -20,8 +20,8 @@ PROMPT_AND_DECODE_EVICT_METHODS=(
 )
 
 TP=1
-BASE_LOG_DIR="/home/jieye/acl25/performance_logs/"
-OUTPUT_DIR="/home/jieye/acl25/performance_logs/csv_results/var_reqs_tp${TP}/"
+BASE_LOG_DIR="$HOME/acl25/performance_logs/"
+OUTPUT_DIR="$HOME/acl25/csv_results/var_reqs_tp${TP}/"
 
 if [ ! -d "$OUTPUT_DIR" ]; then
     mkdir -p "$OUTPUT_DIR"
