@@ -1,15 +1,13 @@
 #!/bin/bash
 # p_latency: prompt latency; d_latency: decode latency; throughput: throughput
-TARGET="p_latency"
+TARGET="throughput"
 
 # COMMON PARAMETERS
-#INPUT_OUPUT_LENS=(1024 2048 4096 8192 16384 32768)
 INPUT_OUPUT_LENS=(1024 2048 4096 8192)
 NUM_REQ=50
 
 ### Models to test
-# MODELS=("Llama-3.1-8B-Instruct" "Mistral-7B-Instruct-v0.2" "Qwen2.5-7B-Instruct-1M")
-MODELS=("Llama-3.1-8B-Instruct")
+MODELS=("Llama-3.1-8B-Instruct" "Mistral-7B-Instruct-v0.2")
 
 BLOCK_SIZES=(16)
 

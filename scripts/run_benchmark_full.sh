@@ -12,7 +12,8 @@ NUM_REQS=(10 20 30 40 50 60 70 80 90 100)
 # Model PATH
 MODEL_PATH="/eagle/projects/RECUP/jye/huggingface-hub/"
 ### Models to test
-MODELS=("Llama-3.1-8B-Instruct" "Mistral-7B-Instruct-v0.2" "Qwen2.5-7B-Instruct-1M")
+# MODELS=("Llama-3.1-8B-Instruct" "Mistral-7B-Instruct-v0.2" "Qwen2.5-7B-Instruct-1M")
+MODELS=("Llama-3.1-8B-Instruct" "Mistral-7B-Instruct-v0.2")
 ### Cache types to test
 CACHE_TYPES=("percentage" "full-cache")
 
@@ -20,7 +21,7 @@ CACHE_TYPES=("percentage" "full-cache")
 BLOCK_SIZES=(8 16 32)
 
 TP=1
-BENCHMARK_SCRIPT_DIR="$HOME/acl25/vllm-Paged-Compression-v3/benchmarks/"
+BENCHMARK_SCRIPT_DIR="$HOME/acl25/vllm-Paged-Compression-v4/benchmarks/"
 LOG_DIR="$HOME/acl25/performance_logs/various_reqs_tp${TP}/"
 
 #################################################################################
@@ -142,13 +143,13 @@ for CACHE_TYPE in "${CACHE_TYPES[@]}"; do
         
         PROMPT_AND_DECODE_EVICT_METHODS=(
             "streamingLLM streamingLLM"
-            "streamingLLM value_l2"
+            # "streamingLLM value_l2"
             "value_l2 value_l2"
-            "value_l2 streamingLLM"
+            # "value_l2 streamingLLM"
         )
 
         if [ $USE_EVICT_FREQ -eq 1 ]; then
-            EVICT_FREQS=(2 4)
+            EVICT_FREQS=(2 4 5)
         else
             BLOCK_SIZE_AND_EVICT_SIZE_PAIR=(
                 "16 8"

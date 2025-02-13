@@ -2,7 +2,7 @@
 # COMMON PARAMETERS
 INPUT_LEN=1024
 OUTPUT_LEN=8192
-NUM_REQ=30
+NUM_REQ=50
 
 BLOCK_SIZE=16
 
@@ -15,9 +15,7 @@ MODELS=("Llama-3.1-8B-Instruct" "Mistral-7B-Instruct-v0.2" "Qwen2.5-7B-Instruct-
 
 PROMPT_AND_DECODE_EVICT_METHODS=(
     "streamingLLM streamingLLM"
-    "streamingLLM value_l2"
     "value_l2 value_l2"
-    "value_l2 streamingLLM"
 )
 
 TP=1
@@ -55,11 +53,13 @@ process_percentage_evictfreq_logs() {
         EVICT_METHOD_DIR="${P_EVICT_METHOD}_${D_EVICT_METHOD}"
         EVICT_METHOD="${P_EVICT_METHOD}+${D_EVICT_METHOD}" 
         for MODEL in "${MODELS[@]}"; do
-            LOG_FILE="${BASE_LOG_DIR}${CACHE_TYPE}/${EVICT_METHOD_DIR}/result_m${MODEL}_b${BLOCK_SIZE}_ef${EVICT_FREQ}_r${NUM_REQ}_p${INPUT_LEN}_g${OUTPUT_LEN}_tp${TP}.log"
-            echo "Start process log file $LOG_FILE"
-            NUM_RERECOMPUTE=$(get_num_recomputes "$LOG_FILE")
-            # Append the result to the CSV file
-            printf "%s,%s,%s\n" "$MODEL" "$EVICT_METHOD" "$NUM_RERECOMPUTE" >> "$CSV_FILE"
+            for BLOCK_SIZE in "${BLOCK_SIZES[@]}"; do
+                LOG_FILE="${BASE_LOG_DIR}${CACHE_TYPE}/${EVICT_METHOD_DIR}/result_m${MODEL}_b${BLOCK_SIZE}_ef${EVICT_FREQ}_r${NUM_REQ}_p${INPUT_LEN}_g${OUTPUT_LEN}_tp${TP}.log"
+                echo "Start process log file $LOG_FILE"
+                NUM_RERECOMPUTE=$(get_num_recomputes "$LOG_FILE")
+                # Append the result to the CSV file
+                printf "%s,%s,%s,%s\n" "$MODEL" "$EVICT_METHOD" "$BLOCK_SIZE" "$NUM_RERECOMPUTE" >> "$CSV_FILE"
+            done
         done
     done 
 }
@@ -67,18 +67,20 @@ process_percentage_evictfreq_logs() {
 process_fullcache_logs() {
     CACHE_TYPE=$1
     for MODEL in "${MODELS[@]}"; do
-        LOG_FILE="${BASE_LOG_DIR}${CACHE_TYPE}/result_m${MODEL}_b${BLOCK_SIZE}_r${NUM_REQ}_p${INPUT_LEN}_g${OUTPUT_LEN}_tp${TP}.log"
-        echo "Start process log file $LOG_FILE"
-        NUM_RERECOMPUTE=$(get_num_recomputes "$LOG_FILE")
-        # Append the result to the CSV file
-        printf "%s,%s,%s\n" "$MODEL" "$CACHE_TYPE" "$NUM_RERECOMPUTE" >> $CSV_FILE
+        for BLOCK_SIZE in "${BLOCK_SIZES[@]}"; do
+            LOG_FILE="${BASE_LOG_DIR}${CACHE_TYPE}/result_m${MODEL}_b${BLOCK_SIZE}_r${NUM_REQ}_p${INPUT_LEN}_g${OUTPUT_LEN}_tp${TP}.log"
+            echo "Start process log file $LOG_FILE"
+            NUM_RERECOMPUTE=$(get_num_recomputes "$LOG_FILE")
+            # Append the result to the CSV file
+            printf "%s,%s,%s,%s\n" "$MODEL" "$CACHE_TYPE" "$BLOCK_SIZE" "$NUM_RERECOMPUTE" >> $CSV_FILE
+        done
     done
 }
 
 ##########################################################################################
-CSV_FILE="${OUTPUT_DIR}num_recomputes_p${INPUT_LEN}_g${OUTPUT_LEN}_r${NUM_REQ}_b${BLOCK_SIZE}.csv"
+CSV_FILE="${OUTPUT_DIR}recmp_events_p${INPUT_LEN}_g${OUTPUT_LEN}_r${NUM_REQ}.csv"
 if [ ! -f $CSV_FILE ]; then 
-    printf "model_name,evict_method,num_recompute\n" > $CSV_FILE 
+    printf "model_name,evict_method,block_size,num_recompute\n" > $CSV_FILE 
 fi
 
 for CACHE_TYPE in "${CACHE_TYPES[@]}"; do

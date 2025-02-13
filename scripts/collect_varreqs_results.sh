@@ -8,15 +8,15 @@ OUTPUT_LEN=8192
 NUM_REQS=(10 20 30 40 50 60 70 80 90 100)
 
 ### Models to test
-MODELS=("Llama-3.1-8B-Instruct" "Mistral-7B-Instruct-v0.2" "Qwen2.5-7B-Instruct-1M")
+MODELS=("Llama-3.1-8B-Instruct" "Mistral-7B-Instruct-v0.2")
 
 BLOCK_SIZES(8 16 32)
 
 PROMPT_AND_DECODE_EVICT_METHODS=(
     "streamingLLM streamingLLM"
-    "streamingLLM value_l2"
+    # "streamingLLM value_l2"
     "value_l2 value_l2"
-    "value_l2 streamingLLM"
+    # "value_l2 streamingLLM"
 )
 
 TP=1

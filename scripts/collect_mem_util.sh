@@ -9,8 +9,7 @@ BLOCK_SIZE=16
 CACHE_TYPES=("full-cache" "percentage")
 
 ### Models to test
-# MODELS=("Llama-3.1-8B-Instruct" "Mistral-7B-Instruct-v0.2" "Qwen2.5-7B-Instruct-1M")
-MODELS=("Llama-3.1-8B-Instruct")
+MODELS=("Llama-3.1-8B-Instruct" "Mistral-7B-Instruct-v0.2")
 
 PROMPT_AND_DECODE_EVICT_METHODS=(
     "streamingLLM streamingLLM"
