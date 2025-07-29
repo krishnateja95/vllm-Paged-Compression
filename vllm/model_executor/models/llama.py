@@ -368,6 +368,13 @@ class LlamaModel(nn.Module):
             })
 
         hidden_states, _ = self.norm(hidden_states, residual)
+        
+        # if get_pp_group().is_first_rank:
+        #     attn_backend_impl = self.layers[self.start_layer].self_attn.attn.impl
+        #     reqids_mapping_rmv_blockIdx = attn_backend_impl.get_rmv_block_idx()
+        #     for req_id, rmv_block_idx in reqids_mapping_rmv_blockIdx.items():
+        #         print(f"requet id {req_id} will remove block index {rmv_block_idx} for layer {self.start_layer}")  # Debugging output
+
         return hidden_states
 
     def load_weights(self, weights: Iterable[Tuple[str,

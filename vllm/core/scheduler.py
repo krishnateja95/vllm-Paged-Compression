@@ -653,10 +653,10 @@ class Scheduler:
                                                    blocks_to_swap_out)
                     if preempted_mode == PreemptionMode.RECOMPUTE:
                         preempted.append(victim_seq_group)
-                        logger.info(f"Scheduler preempting request {victim_seq_group.request_id} with RECOMPUTE mode")
+                        logger.debug(f"Scheduler preempting request {victim_seq_group.request_id} with RECOMPUTE mode")
                     else:
                         swapped_out.append(victim_seq_group)
-                        logger.info(f"Scheduler preempting request {victim_seq_group.request_id} with SWAP mode")
+                        logger.debug(f"Scheduler preempting request {victim_seq_group.request_id} with SWAP mode")
 
                 if not cont_loop:
                     break
@@ -1317,6 +1317,7 @@ class Scheduler:
         allow_async_output_proc: bool = self.use_async_output_proc
 
         # Create input data structures.
+        batched_req_ids: List[str] = []
         seq_group_metadata_list: List[SequenceGroupMetadata] = []
         for i, scheduled_seq_group in enumerate(
                 scheduler_outputs.scheduled_seq_groups):
@@ -1357,9 +1358,6 @@ class Scheduler:
                 block_tables[seq_id] = self.block_manager.get_block_table(seq)
                 self.block_manager.access_all_blocks_in_seq(seq, now)
                 # print(f"Scheduler::schedule, ===========seq_data_len = {seq.data.get_len()}, is_prompt: {is_prompt}") 
-                if ((self.cache_config.paged_evict_config is not None) and is_prompt == False):
-                    self.block_manager.mark_part_blocks_to_be_released(seq)
-                # get the seq_kv_len from block_manager
                 seq_kv_lens[seq_id] = self.block_manager.get_seq_kv_len(seq)        
 
             if self.cache_config.enable_prefix_caching:
@@ -1434,6 +1432,7 @@ class Scheduler:
                     seq_kv_lens = seq_kv_lens,
                 )
             seq_group_metadata_list.append(seq_group_metadata)
+            batched_req_ids.append(seq_group.request_id)    
 
             if allow_async_output_proc:
                 allow_async_output_proc = self._allow_async_output_proc(
@@ -1464,6 +1463,7 @@ class Scheduler:
         # Move to next cache (if exists)
         self.cache_id = self.next_cache_id
 
+        # print(f"Scheduler::schedule, batched req ids: {batched_req_ids}")
         # Return results
         return (seq_group_metadata_list, scheduler_outputs,
                 allow_async_output_proc)
@@ -1479,6 +1479,7 @@ class Scheduler:
         """Free finished seqs in a sequence group."""
         for seq in seq_group.get_seqs():
             if seq.is_finished():
+                # print(f"Scheduler::_free_finished_seqs, free seq: {seq.seq_id} in seq_group {seq_group.request_id}")
                 self.free_seq(seq)
 
     def _free_finished_seq_group(self, seq_group: SequenceGroup) -> None:
@@ -1490,6 +1491,17 @@ class Scheduler:
             # This list will be used to update the Mamba cache in the
             # next step.
             self._finished_requests_ids.append(seq_group.request_id)
+
+            if seq_group.metrics.finished_time is not None:
+                log.debug(f"Finished request {seq_group.request_id} : "
+                        f"arrival_time={seq_group.metrics.arrival_time} "
+                        f"first_scheduled_time={seq_group.metrics.first_scheduled_time} "
+                        f"time_in_queue={seq_group.metrics.time_in_queue} "
+                        f"time_prefill={seq_group.metrics.first_token_time - seq_group.metrics.first_scheduled_time} "
+                        f"TTFT(s)={seq_group.metrics.first_token_time - seq_group.metrics.arrival_time} "
+                        f"time_decodes={seq_group.metrics.finished_time - seq_group.metrics.first_token_time} "
+                        f"TPOT(s)={(time_decodes) / sum(seq.get_output_len() for seq in seq_group.get_seqs())} "
+                        f"e2e_latency(s)={seq_group.metrics.finished_time - seq_group.metrics.arrival_time} ")
 
         # Free finished seqs
         self._free_finished_seqs(seq_group)
@@ -1863,11 +1875,16 @@ class Scheduler:
         num_new_tokens = min(num_new_tokens, remaining_token_budget)
 
         return num_new_tokens
-    
-    def notify_step_done(self) -> None:
-        """Notify the scheduler that a step is done."""
-        if self.cache_config.paged_evict_config is not None:
-            for seq_group in self.running:
-                for seq in seq_group.get_seqs():
-                    self.block_manager.free_released_blocks(seq)
-                
+
+    def update_block_tables(self, seq_group_id, rmv_block_idxs: int) -> None:
+        """Update the block tables of the sequence group."""
+        # print(f"=====Scheduler::update_block_tables, seq_group_id: {seq_group_id}, rmv_block_idxs: {rmv_block_idxs}")
+        for seq_group in self.running:
+            # print(f"Scheduler::update_block_tables, seq_group.request_id: {seq_group.request_id}, seq_group_id: {seq_group_id}, seq_id={seq_group.get_seqs()[0].seq_id}, block_table.len: {len(self.block_manager.get_block_table(seq_group.get_seqs()[0]))}")
+            if seq_group.request_id == seq_group_id:  
+                seq = seq_group.first_seq
+                # print(f"seq_group.request_id = {seq_group.request_id}, seq_id = {seq.seq_id} remove block idxs: {rmv_block_idxs}, block_table.len: {len(self.block_manager.get_block_table(seq))}")
+                self.block_manager.free_prunned_blocks(
+                    seq, rmv_block_idxs)
+                # print(f"Scheduler::update_block_tables, after free_prunned_blocks, req_id = {seq_group.request_id}, seq_id = {seq.seq_id}, block_table.len: {len(self.block_manager.get_block_table(seq))}")
+                break

@@ -4,157 +4,83 @@ import math
 import time
 
 class KVCachePruner:
-    def __init__(self, cache_prune_type, prompt_evict_method, decode_evict_method, block_size, evict_frequency, 
-                 cache_budget, initial_blocks, num_block_merge):
+    def __init__(self, cache_prune_type, evict_method, block_size, cache_budget, initial_blocks):
         self.cache_prune_type = cache_prune_type
-        self.prompt_evict_method = prompt_evict_method
-        self.decode_evict_method = decode_evict_method
+        self.evict_method = evict_method
         self.orig_block_size = block_size
-        if self.cache_prune_type == "percentage":
-            # self.evict_size = evict_size
-            # self.compressed_block_size = self.orig_block_size - self.evict_size
-            # self.compression_rate = int(self.orig_block_size / self.compressed_block_size)
-            self.evict_frequency = evict_frequency # This represents the number of blocks
-        else:
-            self.cache_budget = cache_budget
-            # self.compression_rate = num_block_merge
-            
-        self.initial_blocks = initial_blocks # This represents the number of blocks
-        self.num_block_merge = num_block_merge
+        assert self.cache_prune_type == "budget"
+        self.cache_budget = cache_budget
+        self.sub_evict_method = "value_l2"  # for global & local
+        self.initial_blocks = initial_blocks   # Number of compressed blocks to keep unpruned
+        assert self.cache_budget >= 3 * self.orig_block_size, "Cache budget must be at least 3 times the original block size"
         
-    def cosine_similarity(self, tensor_a, tensor_b):
-        # (TODO): check the shape of tensor_a and tensor_b
-        a_norm = F.normalize(tensor_a, dim=-1) # dim=-1 means normalize along the last dimension (the head_size in our case)
-        b_norm = F.normalize(tensor_b, dim=-1)
-        return torch.sum(a_norm * b_norm, dim=-1)
-
-    def key_l1(self, key_block):
-        return torch.norm(key_block, p=1, dim = -1)
-
     def key_l2(self, key_block):
-        return torch.norm(key_block, p=2, dim = -1)
+        return torch.norm(key_block, p=2, dim = -1)  # mean over the heads
 
-    def value_l1(self, value_block):
-        return torch.norm(value_block, p=1, dim = -1)    
-    
     def value_l2(self, value_block):
         return torch.norm(value_block, p=2, dim = -1)
-    
-    def inverse_key_l1(self, key_block, value_block):
-        return torch.div(1, self.key_l1(key_block) + 1e-8)
     
     def inverse_key_l2(self, key_block, value_block):
         return torch.div(1, self.key_l2(key_block) + 1e-8)
     
-    def key_l1_div_value_l1(self, key_block, value_block):
-        return torch.div(self.key_l2(key_block), self.value_l1(value_block) + 1e-8)
-    
-    def key_l1_div_value_l2(self, key_block, value_block):
-        return torch.div(self.key_l1(key_block), self.value_l2(value_block) + 1e-8)
-    
-    def key_l2_div_value_l1(self, key_block, value_block):
-        return torch.div(self.key_l2(key_block), self.value_l1(value_block) + 1e-8)
-    
-    def key_l2_div_value_l2(self, key_block, value_block):
-        return torch.div(self.key_l2(key_block), self.value_l2(value_block) + 1e-8)
-
-    def value_l1_div_key_l1(self, key_block, value_block):
-        return torch.div(self.value_l1(key_block), self.key_l1(value_block) + 1e-8)
-        
-    def value_l1_div_key_l2(self, key_block, value_block):
-        return torch.div(self.value_l1(key_block), self.key_l2(value_block) + 1e-8)
-
-    def value_l2_div_key_l1(self, key_block, value_block):
-        return torch.div(self.value_l2(key_block), self.key_l1(value_block) + 1e-8)
-    
-    def value_l2_div_key_l2(self, key_block, value_block):
-        return torch.div(self.value_l2(key_block), self.key_l2(value_block) + 1e-8)
-
-    def value_l1_plus_key_l1(self, key_block, value_block):
-        return self.value_l1(key_block) + self.key_l1(value_block)
-    
     def value_l2_plus_key_l2(self, key_block, value_block):
         return self.value_l2(key_block) + self.key_l2(value_block)
-
-    def get_score(self, block_keys, block_values, evict_method):
-        # Check the block_keys and block_values shape
-        if evict_method == "cosine":
-            scores = self.cosine_similarity(block_keys, block_values)
-
-        elif evict_method == "key_l1":
-            scores = self.key_l1(block_keys)
-
-        elif evict_method == "key_l2":
-            scores = self.key_l2(block_keys)
-
-        elif evict_method == "value_l1":
-            scores = self.value_l1(block_values)
-
-        elif evict_method == "value_l2":
-            scores = self.value_l2(block_values)
-
-        elif evict_method == "key_l1_div_value_l1":
-            scores = self.key_l1_div_value_l1(block_keys, block_values)
-        
-        elif evict_method == "key_l1_div_value_l2":
-            scores = self.key_l1_div_value_l2(block_keys, block_values)
-
-        elif evict_method == "key_l2_div_value_l1":
-            scores = self.key_l2_div_value_l1(block_keys, block_values)
-            
-        elif evict_method == "key_l2_div_value_l2":
-            scores = self.key_l2_div_value_l2(block_keys, block_values)
-
-        elif evict_method == "value_l1_div_key_l1":
-            scores = self.value_l1_div_key_l1(block_keys, block_values)
-        
-        elif evict_method == "value_l1_div_key_l2":
-            scores = self.value_l1_div_key_l2(block_keys, block_values)
-
-        elif evict_method == "value_l2_div_key_l1":
-            scores = self.value_l2_div_key_l1(block_keys, block_values)
-            
-        elif evict_method == "value_l2_div_key_l2":
-            scores = self.value_l2_div_key_l2(block_keys, block_values)
-
-        elif evict_method == "value_l1_plus_key_l1":
-            scores = self.value_l1_plus_key_l1(block_keys, block_values)
-            
-        elif evict_method == "value_l2_plus_key_l2":
-            scores = self.value_l2_plus_key_l2(block_keys, block_values)
-
-        elif evict_method == "streamingLLM":
-            q_len, num_heads, head_dim = block_keys.shape
-            scores = torch.arange(1, q_len + 1).view(-1, 1).expand(-1, num_heads)
-        
-        elif evict_method == "inverse_key_l1":
-            scores = self.inverse_key_l1(block_keys, block_values)
-        
+    
+    def get_token_score(self, keys, values, evict_method):
+        scores = 0 
+        if evict_method in ['global', 'local']:
+            if self.sub_evict_method == "value_l2":
+                # use value_l2 norm for global and local eviction
+                scores = self.value_l2(values)
+            elif self.sub_evict_method == "key_l2":
+                # use key_l2 norm for global and local eviction
+                scores = self.key_l2(keys)
+            elif self.sub_evict_method == "value_l2_plus_key_l2":
+                # use value_l2 + key_l2 norm for global and local eviction
+                scores = self.value_l2_plus_key_l2(keys, values)
+            elif self.sub_evict_method == "inverse_key_l2":
+                # use inverse key_l2 norm for global and local eviction
+                scores = self.inverse_key_l2(keys, values)
         elif evict_method == "inverse_key_l2":
-            scores = self.inverse_key_l2(block_keys, block_values)
-        
+            # use inverse key_l2 norm for inverse_key_l2 eviction
+            scores = self.inverse_key_l2(keys, values)
+        else:
+            raise ValueError(f"Unknown eviction method: {evict_method}")
         return scores
+
+    def get_block_score(self, block_keys, block_values, evict_method):
+        #### only used for global and local eviction
+        assert evict_method in ["global", "local"], "Only global and local eviction methods are supported for block score calculation"
+        if self.sub_evict_method == "value_l2":
+            value_norms = torch.norm(block_values, p=2, dim=-1).mean(dim=1).sum(dim=0)
+            return value_norms
+        elif self.sub_evict_method == "key_l2":
+            key_norms = torch.norm(block_keys, p=2, dim=-1).mean(dim=1).sum(dim=0)
+            return key_norms
+        elif self.sub_evict_method == "value_l2_plus_key_l2":
+            value_norms = torch.norm(block_values, p=2, dim=-1).mean(dim=1).sum(dim=0)
+            key_norms = torch.norm(block_keys, p=2, dim=-1).mean(dim=1).sum(dim=0)
+            return value_norms + key_norms
+        elif self.sub_evict_method == "inverse_key_l2":
+            key_norms = torch.norm(block_keys, p=2, dim=-1).mean(dim=1).sum(dim=0)
+            return 1 / (key_norms + 1e-8)
 
 
     def prune_prompt(self, key_tensor, value_tensor):
+        # remove tokens for a single request
         # start = time.perf_counter()
         q_len, num_heads, head_dim = key_tensor.shape
+        if q_len <= self.cache_budget:
+            return key_tensor, value_tensor
         
-        if self.prompt_evict_method == "streamingLLM":
-            if self.cache_prune_type == "percentage":
-                if q_len <= (self.initial_blocks + self.num_block_merge) * self.orig_block_size:
-                    return key_tensor, value_tensor
-            else:
-                assert self.cache_budget > (self.initial_blocks + self.num_block_merge) * self.orig_block_size
-                if q_len <= self.cache_budget:
-                    return key_tensor, value_tensor
-                
+        if self.evict_method in ["streamingLLM", "streamingLLM-1"]:
+            # for budget case
             remainder_size = q_len % self.orig_block_size
             # Only the middle slice will be pruned
-            end_idx_first_slice = self.initial_blocks * self.orig_block_size
+            end_idx_first_slice = self.orig_block_size
             first_slice = slice(0, end_idx_first_slice)
             
-            end_idx_middle_slice = q_len - self.num_block_merge * self.orig_block_size - remainder_size
+            end_idx_middle_slice = q_len - self.orig_block_size - remainder_size
             middle_slice = slice(end_idx_first_slice, end_idx_middle_slice)
             
             last_slice = slice(end_idx_middle_slice, q_len)
@@ -165,25 +91,12 @@ class KVCachePruner:
             middle_value = value_tensor[middle_slice, :, :]
             middle_tokens = middle_key.shape[0]
             
-            if self.cache_prune_type == "percentage": 
-                # print(f"**********2===remainder_size = {remainder_size}, q_len = {q_len}, first_slice = {first_slice}, middle_slice = {middle_slice}, last_slice = {last_slice}")   
-                # print(f"**********2===middle_tokens = {middle_tokens}")
-                # Calculate the number of tokens to prune from middle slice
-                total_prune_tokens = int(middle_tokens/self.evict_frequency)
-                # print(f"**********3===total_prune_tokens = {total_prune_tokens}")
-                total_prune_tokens = self.orig_block_size * (math.floor(total_prune_tokens/self.orig_block_size))  
-                # print(f"**********4===total_prune_tokens = {total_prune_tokens}")
-                
-                # Middle slice after prunning
-                middle_slice = slice(self.initial_blocks * self.orig_block_size + total_prune_tokens, end_idx_middle_slice)
-                # print(f"**********5===middle_slice = {middle_slice}") 
-            else:
-                middle_pruned_tokens = self.cache_budget - (self.initial_blocks * self.orig_block_size) - (self.num_block_merge * self.orig_block_size)
-                total_prune_tokens = middle_tokens - middle_pruned_tokens
-                total_prune_tokens = 0 if total_prune_tokens < 0 else total_prune_tokens
-        
-                # Middle slice after prunning
-                middle_slice = slice(self.initial_blocks * self.orig_block_size + total_prune_tokens, end_idx_middle_slice) 
+            middle_pruned_tokens = self.cache_budget - self.orig_block_size - self.orig_block_size
+            total_prune_tokens = middle_tokens - middle_pruned_tokens
+            total_prune_tokens = 0 if total_prune_tokens < 0 else total_prune_tokens
+    
+            # Middle slice after prunning
+            middle_slice = slice(end_idx_first_slice + total_prune_tokens, end_idx_middle_slice) 
         
             # Rejoin the tokens from the first slice, prunned_middle_key, and last slice
             rejoined_key = torch.cat([
@@ -200,20 +113,13 @@ class KVCachePruner:
             # end = time.perf_counter()
             # print(f"Time taken to prune prompt blocks take {end - start:.6f} using streamingLLM on stream {torch.cuda.current_stream()}")
             return rejoined_key, rejoined_value 
-        else:
-            if self.cache_prune_type == "percentage":
-                if q_len <= (self.initial_blocks + self.num_block_merge) * self.orig_block_size:
-                    return key_tensor, value_tensor
-            else:
-                assert self.cache_budget > (self.initial_blocks + self.num_block_merge) * self.orig_block_size
-                if q_len <= self.cache_budget:
-                    return key_tensor, value_tensor
-            
+        elif self.evict_method in ["local", "global", "inverse_key_l2"]:
+            # always keep the first block and the last block
             remainder_size = q_len % self.orig_block_size
-            end_idx_first_slice = self.initial_blocks * self.orig_block_size
+            end_idx_first_slice = self.orig_block_size
             first_slice = slice(0, end_idx_first_slice)
             
-            end_idx_middle_slice = q_len - self.num_block_merge * self.orig_block_size - remainder_size
+            end_idx_middle_slice = q_len - self.orig_block_size - remainder_size
             middle_slice = slice(end_idx_first_slice, end_idx_middle_slice)
 
             last_slice = slice(end_idx_middle_slice, q_len)
@@ -223,19 +129,13 @@ class KVCachePruner:
             middle_key = key_tensor[middle_slice, :, :]
             middle_value = value_tensor[middle_slice, :, :]
             middle_tokens = middle_key.shape[0]
-                
-            if self.cache_prune_type == "percentage":
-                total_prune_tokens = int(middle_tokens/self.evict_frequency) 
-                total_prune_tokens = self.orig_block_size * (math.floor(total_prune_tokens/self.orig_block_size))  
-                
-            else:
-                # For cache_budget case
-                middle_pruned_tokens = self.cache_budget - (self.initial_blocks * self.orig_block_size) - (self.num_block_merge * self.orig_block_size)
-                total_prune_tokens = middle_tokens - middle_pruned_tokens 
-                total_prune_tokens = 0 if total_prune_tokens < 0 else total_prune_tokens
+            
+            middle_pruned_tokens = self.cache_budget - self.orig_block_size - self.orig_block_size
+            total_prune_tokens = middle_tokens - middle_pruned_tokens 
+            total_prune_tokens = 0 if total_prune_tokens < 0 else total_prune_tokens
                 
             # Get scores for middle tokens
-            scores = self.get_score(middle_key, middle_value, self.prompt_evict_method)
+            scores = self.get_token_score(middle_key, middle_value, self.evict_method)
 
             # Evict least N elements, select the indices along dim=0
             _, least_indices = torch.topk(scores, k=total_prune_tokens, largest=False, dim=0)
@@ -254,6 +154,7 @@ class KVCachePruner:
                 pruned_middle_key,
                 key_tensor[last_slice, :, :]
             ], dim=0)
+            
             rejoined_value = torch.cat([
                 value_tensor[first_slice, :, :],
                 pruned_middle_value,
@@ -262,6 +163,168 @@ class KVCachePruner:
             # end = time.perf_counter()
             # print(f"Time taken to prune prompt blocks take {end - start:.6f} using streamingLLM on stream {torch.cuda.current_stream()}")   
             return rejoined_key, rejoined_value
+    
+    def prune_prompt_inplace(self, key_tensor, value_tensor, output_key_tensor, output_value_tensor):
+        """
+        In-place version of prune_prompt that writes directly to pre-allocated output tensors.
+        
+        Args:
+            key_tensor: Input keys to prune
+            value_tensor: Input values to prune  
+            output_key_tensor: Pre-allocated tensor to write pruned keys
+            output_value_tensor: Pre-allocated tensor to write pruned values
+        """
+        q_len, num_heads, head_dim = key_tensor.shape
+        if q_len <= self.cache_budget:
+            output_key_tensor.copy_(key_tensor)
+            output_value_tensor.copy_(value_tensor)
+            return
+
+        if self.evict_method in ["streamingLLM", "streamingLLM-1"]:
+            # for budget case
+            remainder_size = q_len % self.orig_block_size
+            # Only the middle slice will be pruned
+            end_idx_first_slice = self.orig_block_size
+            first_slice = slice(0, end_idx_first_slice)
+            
+            end_idx_middle_slice = q_len - self.orig_block_size - remainder_size
+            middle_slice = slice(end_idx_first_slice, end_idx_middle_slice)
+            
+            last_slice = slice(end_idx_middle_slice, q_len)
+            
+            # Extract middle tokens and its size
+            middle_tokens = end_idx_middle_slice - end_idx_first_slice
+            
+            middle_pruned_tokens = self.cache_budget - self.orig_block_size - self.orig_block_size
+            total_prune_tokens = middle_tokens - middle_pruned_tokens
+            total_prune_tokens = 0 if total_prune_tokens < 0 else total_prune_tokens
+    
+            # Middle slice after pruning
+            middle_slice = slice(end_idx_first_slice + total_prune_tokens, end_idx_middle_slice) 
+    
+            # Write directly to output tensors
+            combined_key = torch.cat([
+                key_tensor[first_slice, :, :],
+                key_tensor[middle_slice, :, :],
+                key_tensor[last_slice, :, :]
+            ], dim=0)
+            combined_value = torch.cat([
+                value_tensor[first_slice, :, :],
+                value_tensor[middle_slice, :, :],
+                value_tensor[last_slice, :, :]
+            ], dim=0)
+            
+            output_key_tensor.copy_(combined_key)
+            output_value_tensor.copy_(combined_value)
+
+        elif self.evict_method in ["local", "global", "inverse_key_l2"]:
+            remainder_size = q_len % self.orig_block_size
+            end_idx_first_slice = self.orig_block_size
+            first_slice = slice(0, end_idx_first_slice)
+            
+            end_idx_middle_slice = q_len - self.orig_block_size - remainder_size
+            middle_slice = slice(end_idx_first_slice, end_idx_middle_slice)
+
+            last_slice = slice(end_idx_middle_slice, q_len)
+            
+            # Extract middle tokens
+            middle_key = key_tensor[middle_slice, :, :]
+            middle_value = value_tensor[middle_slice, :, :]
+            middle_tokens = middle_key.shape[0]
+                
+            middle_pruned_tokens = self.cache_budget - self.orig_block_size - self.orig_block_size
+            total_prune_tokens = middle_tokens - middle_pruned_tokens 
+            total_prune_tokens = 0 if total_prune_tokens < 0 else total_prune_tokens
+
+            if total_prune_tokens > 0:
+                # Get scores for middle tokens
+                scores = self.get_token_score(middle_key, middle_value, self.evict_method)
+
+                # Evict least N elements, select the indices along dim=0
+                _, least_indices = torch.topk(scores, k=total_prune_tokens, largest=False, dim=0)
+
+                # Create a mask for pruning
+                mask = torch.ones_like(scores, dtype=torch.bool)
+                mask.scatter_(0, least_indices, False)
+
+                # Get pruned middle tensors
+                pruned_middle_key = middle_key[mask].view(-1, num_heads, head_dim)
+                pruned_middle_value = middle_value[mask].view(-1, num_heads, head_dim)
+                # print(f"total_prune_tokens={total_prune_tokens} middle_keys={middle_tokens} pruned_middle_key.shape = {pruned_middle_key.shape}, middle_key.shape = {middle_key.shape}")
+            else:
+                # No pruning needed, keep the entire middle slice
+                pruned_middle_key = middle_key
+                pruned_middle_value = middle_value
+            
+            # # Calculate sizes
+            # first_size = self.orig_block_size
+            # pruned_middle_size = pruned_middle_key.shape[0]
+            # last_size = q_len - end_idx_middle_slice
+            
+            # Single concatenation operation (most efficient)
+            combined_key = torch.cat([
+                key_tensor[first_slice, :, :],
+                pruned_middle_key,
+                key_tensor[last_slice, :, :]
+            ], dim=0)
+            
+            combined_value = torch.cat([
+                value_tensor[first_slice, :, :],
+                pruned_middle_value,
+                value_tensor[last_slice, :, :]
+            ], dim=0)
+            
+            # print(f"qlen={q_len}, combined_key.shape = {combined_key.shape}, combined_value.shape = {combined_value.shape}, output_key_tensor.shape= {output_key_tensor.shape}, output_value_tensor.shape = {output_value_tensor.shape}") 
+            output_key_tensor.copy_(combined_key)
+            output_value_tensor.copy_(combined_value)
+        else:
+            raise ValueError(f"Unsupported eviction method: {self.evict_method} for cache_prune_type: {self.cache_prune_type}")
+    
+     
+    def get_pruned_length(self, seq_len):
+        """
+        Calculate the length after pruning for a given sequence length.
+        This is needed for pre-allocating output tensors.
+        """
+        if seq_len <= self.cache_budget:
+            return seq_len
+            
+        if self.evict_method in ["streamingLLM", "streamingLLM-1", "inverse_key_l2"]: 
+            # Need to prune tokens from middle slice
+            remainder_size = seq_len % self.orig_block_size
+            # Only the middle slice will be pruned
+            end_idx_first_slice = self.orig_block_size
+            num_first_slice_tokens = end_idx_first_slice
+
+            end_idx_middle_slice = seq_len - self.orig_block_size - remainder_size
+            num_middle_tokens = end_idx_middle_slice - end_idx_first_slice
+            num_last_slice_tokens = seq_len - end_idx_middle_slice
+
+            middle_unpruned_tokens = self.cache_budget - num_first_slice_tokens - self.orig_block_size
+
+            middle_unpruned_tokens = max(middle_unpruned_tokens, 0)
+            total_unpruned_tokens = num_first_slice_tokens + middle_unpruned_tokens + num_last_slice_tokens
+
+            return total_unpruned_tokens
+            
+        elif self.evict_method in ["local", "global"]:
+            # Need to prune tokens from middle slice
+            remainder_size = seq_len % self.orig_block_size
+            # Only the middle slice will be pruned
+            end_idx_first_slice = self.orig_block_size
+            num_first_slice_tokens = end_idx_first_slice
+            end_idx_middle_slice = seq_len - self.orig_block_size - remainder_size
+            num_middle_tokens = end_idx_middle_slice - end_idx_first_slice
+            num_last_slice_tokens = seq_len - end_idx_middle_slice
+            
+            middle_unpruned_tokens = self.cache_budget - num_first_slice_tokens - self.orig_block_size
+            middle_unpruned_tokens = max(middle_unpruned_tokens, 0)
+            total_unpruned_tokens = num_first_slice_tokens + middle_unpruned_tokens + num_last_slice_tokens
+
+            return total_unpruned_tokens
+        else:
+            raise ValueError(f"Unsupported eviction method: {self.evict_method} for cache_prune_type: {self.cache_prune_type}")
+    
         
     def get_blocks_to_prune_and_merge_decode(self, seq_kv_len):
         if self.decode_evict_method == "streamingLLM":
@@ -322,19 +385,17 @@ if __name__ == "__main__":
     num_heads = 4
     head_dim = 64
 
-    q_len = 8192
+    q_len = 1024
     block_size = 16
-    evict_frequency = 4
+    budget = 512
     initial_blocks = 1
     # prompt_evict_method = "streamingLLM"
-    prompt_evict_method = "value_l2"
-    decode_evit_method = "value_l2"
+    evict_method = "local"
+    topk_blocks = 3
 
-    cache_type   = "percentage"
-    cache_budget = 128
-    num_block_merge = 2
-    
-    pruner = KVCachePruner(cache_type, prompt_evict_method, decode_evit_method, block_size, evict_frequency, cache_budget, initial_blocks, num_block_merge)
+    cache_type   = "budget"
+
+    pruner = KVCachePruner(cache_type, evict_method, block_size, budget, initial_blocks)
 
     keys = torch.randn(q_len, num_heads, head_dim)
     values = torch.randn(q_len, num_heads, head_dim)
@@ -344,8 +405,8 @@ if __name__ == "__main__":
     print("after prompt blocks pruning", keys.shape, values.shape)
     print()
 
-    s_block_id, e_block_id, prune_tokens = pruner.get_blocks_to_prune_and_merge_decode(keys.shape[0] + block_size * evict_frequency) 
-    print(f"s_block_id = {s_block_id}, e_block_id = {e_block_id}, prune_tokens = {prune_tokens}")
+    # s_block_id, e_block_id, prune_tokens = pruner.get_blocks_to_prune_and_merge_decode(keys.shape[0] + block_size * evict_frequency) 
+    # print(f"s_block_id = {s_block_id}, e_block_id = {e_block_id}, prune_tokens = {prune_tokens}")
     # keys = torch.randn(bsz, num_heads, q_len, head_dim)
     # values = torch.randn(bsz, num_heads, q_len, head_dim)
 

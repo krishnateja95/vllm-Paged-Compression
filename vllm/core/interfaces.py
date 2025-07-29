@@ -126,18 +126,21 @@ class BlockSpaceManager(ABC):
     def get_num_cached_tokens(self, seq: Sequence) -> int:
         pass
     
-    @abstractmethod
-    def prune_seq_kv_cache(self, seq: Sequence) -> None:
-        pass
+    # @abstractmethod
+    # def prune_seq_kv_cache(self, seq: Sequence) -> None:
+    #     pass
     
-    @abstractmethod
-    def mark_part_blocks_to_be_released(self, seq: Sequence) -> None:
-        pass
+    # @abstractmethod
+    # def mark_part_blocks_to_be_released(self, seq: Sequence) -> None:
+    #     pass
     
     @abstractmethod
     def get_seq_kv_len(self, seq: Sequence) -> int:
         pass
     
+    # @abstractmethod
+    # def free_released_blocks(self, seq: Sequence) -> None:
+    #     pass
     @abstractmethod
-    def free_released_blocks(self, seq: Sequence) -> None:
+    def free_prunned_blocks(self, seq: Sequence, rmv_block_idx: int) -> None:
         pass

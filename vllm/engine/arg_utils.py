@@ -201,14 +201,15 @@ class EngineArgs:
     
     # Paged Eviction related configs
     enable_paged_eviction: Optional[bool] = False
-    cache_prune_type: Optional[str] = "percentage"
-    prompt_evict_method: Optional[str] = "streamingLLM"
-    decode_evict_method: Optional[str] = "value_l2"
+    disable_evict_prefill: Optional[bool] = False
+    cache_prune_type: Optional[str] = "budget"
+    evict_method: Optional[str] = "streamingLLM"
     # evict_size: Optional[int] = 8
-    evict_freq: Optional[int] = 2
-    cache_budget: Optional[int] = None
-    initial_blocks: Optional[int] = 1
-    num_blocks_merge: Optional[int] = 2
+    # evict_freq: Optional[int] = 2
+    cache_budget: Optional[int] = 1024
+    # initial_blocks: Optional[int] = 1
+    # num_blocks_merge: Optional[int] = 2
+    topk_blocks: Optional[int] = 3 # for local, use 3; for global, use -1
 
     def __post_init__(self):
         if not self.tokenizer:
@@ -975,6 +976,15 @@ class EngineArgs:
         )
         
         parser.add_argument(
+            '--disable-evict-prefill',
+            action='store_true',
+            default=EngineArgs.disable_evict_prefill,
+            help="Disable prune prefill tokens when calculating the attention."
+            "When disabled evict prefill, it will compute attention first and then prune the prefill tokens."
+            "When enabled evict prefill, it will prune the prefill tokens before computing the attention."
+        )
+
+        parser.add_argument(
             '--cache-prune-type',
             type=str,
             choices=['percentage', 'budget'],
@@ -983,41 +993,19 @@ class EngineArgs:
         ) 
 
         parser.add_argument(
-            '--prompt-evict-method',
+            '--evict-method',
             type=str,
-            choices=['cosine', 'key_l1', 'key_l2', 'value_l1', 'value_l2', 
-                     'key_l1_div_value_l1', 'key_l1_div_value_l2', 'key_l2_div_value_l1', 
-                     'key_l2_div_value_l2', 'value_l1_div_key_l1', 'value_l1_div_key_l2', 
-                     'value_l2_div_key_l1', 'value_l2_div_key_l2', 'value_l1_plus_key_l1', 
-                     'value_l2_plus_key_l2', 'streamingLLM', 'inverse_key_l1', 'inverse_key_l2'],
-            default=EngineArgs.prompt_evict_method,
-            help='The paged eviction method to use.'
-        )
-        
-        parser.add_argument(
-            '--decode-evict-method',
-            type=str,
-            choices=['cosine', 'key_l1', 'key_l2', 'value_l1', 'value_l2', 
-                     'key_l1_div_value_l1', 'key_l1_div_value_l2', 'key_l2_div_value_l1', 
-                     'key_l2_div_value_l2', 'value_l1_div_key_l1', 'value_l1_div_key_l2', 
-                     'value_l2_div_key_l1', 'value_l2_div_key_l2', 'value_l1_plus_key_l1', 
-                     'value_l2_plus_key_l2', 'streamingLLM', 'inverse_key_l1', 'inverse_key_l2'],
-            default=EngineArgs.decode_evict_method,
+            choices=['streamingLLM', 'streamingLLM-1', 'inverse_key_l2', 'local', 'global'],
+            default=EngineArgs.evict_method,
             help='The paged eviction method to use.'
         )
 
         # parser.add_argument(
-        #     '--evict-size',
+        #     '--evict-freq',
         #     type=int,
-        #     default=EngineArgs.evict_size,
-        #     help='The number of tokens to evict from a KV cache block'
+        #     default=EngineArgs.evict_freq,
+        #     help='How often to trigger eviction in terms of number of blocks'
         # )
-        parser.add_argument(
-            '--evict-freq',
-            type=int,
-            default=EngineArgs.evict_freq,
-            help='How often to trigger eviction in terms of number of blocks'
-        )
         
         parser.add_argument(
             '--cache-budget',
@@ -1026,18 +1014,25 @@ class EngineArgs:
             help='The number of tokens to keep in the KV cache for each request after pruning'
         )
         
-        parser.add_argument(
-            '--initial-blocks',
-            type=int,
-            default=EngineArgs.initial_blocks,
-            help='The number of initial blocks to keep unprunned'
-        )
+        # parser.add_argument(
+        #     '--initial-blocks',
+        #     type=int,
+        #     default=EngineArgs.initial_blocks,
+        #     help='The number of initial blocks to keep unprunned'
+        # )
+        
+        # parser.add_argument(
+        #     '--num-blocks-merge',
+        #     type=int,
+        #     default=EngineArgs.num_blocks_merge,
+        #     help='The number of blocks to merge'
+        # )
         
         parser.add_argument(
-            '--num-blocks-merge',
+            '--topk-blocks',
             type=int,
-            default=EngineArgs.num_blocks_merge,
-            help='The number of blocks to merge'
+            default=EngineArgs.topk_blocks,
+            help='The number of top-k blocks to compare when pruning'
         )
 
         return parser
@@ -1137,13 +1132,14 @@ class EngineArgs:
         paged_evict_config = None
         if self.enable_paged_eviction:
             paged_evict_config = PagedEvictConfig(
+                disable_evict_prefill=self.disable_evict_prefill,
                 cache_prune_type=self.cache_prune_type,
-                prompt_evict_method=self.prompt_evict_method,
-                decode_evict_method=self.decode_evict_method,
-                evict_freq=self.evict_freq,
+                evict_method=self.evict_method,
+                # evict_freq=self.evict_freq,
                 cache_budget=self.cache_budget,
-                initial_blocks=self.initial_blocks,
-                num_block_merge=self.num_blocks_merge
+                # initial_blocks=self.initial_blocks,
+                # num_block_merge=self.num_blocks_merge,
+                topk_blocks=self.topk_blocks
             )
             
         cache_config = CacheConfig(

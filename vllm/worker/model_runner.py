@@ -61,7 +61,7 @@ from vllm.worker.model_runner_base import (
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionBackend
 
-from vllm.core.page_evict_kv_util import get_blocks_to_prune
+# from vllm.core.page_evict_kv_util import get_blocks_to_prune
 
 logger = init_logger(__name__)
 
@@ -258,8 +258,8 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
             reinit_use_defaults: bool = False,
             encoder_seq_len: int = 0,
             
+            # store the sequence kv lens after prunning 
             seq_kv_lens: Optional[Dict[int, int]] = None,
-            # target_block_tables: Optional[Dict[int, List[int]]] = None,
         ):
             if reinit:
                 assert len(self.seq_ids) == len(seq_ids)  # type: ignore
@@ -382,19 +382,18 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
             self.multi_modal_kwargs = multi_modal_kwargs
             self.multi_modal_placeholder_maps = multi_modal_placeholder_maps
             self.prefix_cache_hit = prefix_cache_hit
+            # for prompt phase, seq_kv_lens is the prunned lens; for decode phase, it is the lens before perform prunning
             self.seq_kv_lens = seq_kv_lens
-            self.seq_kv_lens_before_prune = (
-                None if seq_kv_lens is None else {k: v for k, v in seq_kv_lens.items()}
-            ) 
-            self.target_block_tables = (
-                None if self.block_tables is None 
-                else {k: v.copy() for k, v in self.block_tables.items()}
-            )
+            # self.seq_kv_lens_before_prune = (
+            #     None if seq_kv_lens is None else {k: v for k, v in seq_kv_lens.items()}
+            # ) 
 
             self.n_seqs = len(self.seq_ids)
 
             if not reinit:
                 self.__post_init__()
+                
+            # print(f"In ModelInputForGPUBuilder.InterDataForSeqGroup.__init__: request_id={self.request_id}, seq_ids={self.seq_ids}")
 
         def __post_init__(self):
             self.n_seqs = len(self.seq_ids)
@@ -532,17 +531,20 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
         if self.runner.cache_config.paged_evict_config is not None:
             # paged evict is enabled
             paged_evict_config = self.runner.cache_config.paged_evict_config
-            if ((not inter_data.is_prompt) and 
-                (seq_len %  (paged_evict_config.original_block_size * paged_evict_config.evict_freq)) == 0):
-                seq_id = inter_data.seq_ids[seq_idx]
-                # print(f"ModelInputForGPUBuilder._compute_lens___2: seq_kv_lens={inter_data.seq_kv_lens[seq_id]}, inter_data.seq_lens={inter_data.seq_lens}")
-                s_block_idx,e_block_idx, pruned_tokens = get_blocks_to_prune(paged_evict_config, inter_data.seq_kv_lens[seq_id]) 
-                # print(f"ModelInputForGPUBuilder._compute_lens___2: seq_kv_lens={inter_data.seq_kv_lens[seq_id]}, pruned_tokens={pruned_tokens}") 
-                if s_block_idx != -1:
-                    inter_data.seq_kv_lens[seq_id] -= pruned_tokens
-                    # print(f"ModelInputForGPUBuilder._compute_lens___2: seq_kv_lens={inter_data.seq_kv_lens[seq_id]}")
-                    del inter_data.target_block_tables[seq_id][s_block_idx:e_block_idx] 
-                    # print(f"ModelInputForGPUBuilder._compute_lens___2: target_block_tables={inter_data.target_block_tables}, block_tables={inter_data.block_tables}")
+            ####TODO: To check this logic
+            ### For prompt phase, the kv_len is already the length after prunning.
+            ### For decode phase, it is the length before prunning, so we need to set it to the length after prunning
+            ### We only prune 1 block when prunning is triggered.
+            if not inter_data.is_prompt:
+                ### calculate the kv_len for each request
+                if paged_evict_config.evict_method in ["streamingLLM", "streamingLLM-1", "global", "local"]:
+                    if ((seq_len > paged_evict_config.cache_budget) and (seq_len % self.runner.cache_config.block_size == 0)): 
+                        seq_id = inter_data.seq_ids[seq_idx]
+                        inter_data.seq_kv_lens[seq_id] -= self.runner.cache_config.block_size
+
+                else:
+                    # for inverse_key_l2, we don't prune blocks in decode phase
+                    pass
         
         if seq_data.mrope_position_delta is not None:
             if inter_data.mrope_input_positions is None:
@@ -1682,6 +1684,8 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
 
         self.attn_state.begin_forward(model_input)
 
+        # print(f"Executing model with request_ids_to_seq_ids: {model_input.request_ids_to_seq_ids}")
+
         # Currently cuda graph is only supported by the decode phase.
         assert model_input.attn_metadata is not None
         prefill_meta = model_input.attn_metadata.prefill_metadata
@@ -1789,6 +1793,14 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
             logits=logits,
             sampling_metadata=model_input.sampling_metadata,
         )
+        
+        if self.cache_config.paged_evict_config is not None:
+            attn_backend_impl = self.model.model.layers[0].self_attn.attn.impl
+            reqids_mapping_rmv_blockIdx = attn_backend_impl.get_rmv_block_idx()
+            # for req_id, rmv_block_idx in reqids_mapping_rmv_blockIdx.items():
+            #     print(f"requet id {req_id} will remove block index {rmv_block_idx} for layer 0")  # Debugging output
+            output.reqids_to_rmv_block_idx = reqids_mapping_rmv_blockIdx
+
         if (self.observability_config is not None
                 and self.observability_config.collect_model_forward_time
                 and output is not None):

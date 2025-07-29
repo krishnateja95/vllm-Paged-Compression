@@ -29,6 +29,8 @@ from vllm.worker.pooling_model_runner import PoolingModelRunner
 from vllm.worker.worker_base import (LocalOrDistributedWorkerBase, WorkerBase,
                                      WorkerInput)
 
+from vllm.worker.tmp_cache_singleton import TmpCacheSingleton
+
 logger = init_logger(__name__)
 
 
@@ -94,6 +96,9 @@ class Worker(LocalOrDistributedWorkerBase):
         # Initialize gpu_cache as pooling models don't initialize kv_caches
         self.gpu_cache: Optional[List[List[torch.Tensor]]] = None
         self._seq_group_metadata_cache: Dict[str, SequenceGroupMetadata] = {}
+        
+        #### create the temporary cache singleton instance
+        self.tmp_cache_singleton: TmpCacheSingleton = None
 
         # Torch profiler. Enabled and configured through env vars:
         # VLLM_TORCH_PROFILER_DIR=/path/to/save/trace
@@ -150,6 +155,10 @@ class Worker(LocalOrDistributedWorkerBase):
                                             self.local_rank)
         # Set random seed.
         set_random_seed(self.model_config.seed)
+        
+        self.tmp_cache_singleton = TmpCacheSingleton.create_instance(
+            self.cache_config, self.model_config, self.parallel_config,
+            self.device_config, self.scheduler_config)
 
     def load_model(self):
         self.model_runner.load_model()

@@ -13,7 +13,7 @@ from vllm.core.interfaces import AllocStatus, BlockSpaceManager
 from vllm.sequence import Sequence, SequenceGroup, SequenceStatus
 from vllm.utils import Device
 from vllm.config import PagedEvictConfig
-from vllm.core.page_evict_kv_util import get_num_required_blocks_after_prune_promt, get_blocks_to_prune
+from vllm.core.page_evict_kv_util import get_num_required_blocks_after_prune_promt
 
 SeqId = int
 EncoderSeqId = str
@@ -137,7 +137,7 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
             assert not seq_group.is_encoder_decoder(), "Paged eviction for encoder/decoder models is not supported."
             assert num_lookahead_slots == 0, "Paged eviction for lookahead slots is not supported."
             
-            num_required_blocks, _ = get_num_required_blocks_after_prune_promt(len(seq.get_token_ids()), self.paged_evict_config)
+            num_required_blocks, _ = get_num_required_blocks_after_prune_promt(len(seq.get_token_ids()), self.paged_evict_config, self.block_size)
 
         if self.max_block_sliding_window is not None:
             num_required_blocks = min(num_required_blocks,
@@ -531,30 +531,13 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         """
         return self._computed_blocks_tracker.get_num_cached_tokens(seq)
     
-    def prune_seq_kv_cache(self, seq: Sequence) -> None:
-        pass
+    # def prune_seq_kv_cache(self, seq: Sequence) -> None:
+    #     pass
     
-    def mark_part_blocks_to_be_released(self, seq: Sequence) -> None:
-        if not self.enable_caching and self.paged_evict_config is not None:
-            # get the block table
-            block_table = self.block_tables[seq.seq_id]
-            # check if need to prune the KV cache
-            # print(f"BlockManager: mark_part_blocks_to_be_released, seq_len={seq.data.get_len()}, original_block_size={self.paged_evict_config.original_block_size}")
-            if (seq.data.get_len() % (self.paged_evict_config.original_block_size * self.paged_evict_config.evict_freq)) == 0:
-                # get the block_ids that need to be prunned
-                # (TODO: Modify)get KV cache len,
-                s_block_idx, e_block_idx, _ = get_blocks_to_prune(self.paged_evict_config, block_table.get_seq_kv_len())
-                # print(f"BlockManager: mark_part_blocks_to_be_released, s_block_idx={s_block_idx}, e_block_idx={e_block_idx}")
-                if s_block_idx != -1:
-                    block_table.mark_part_blocks_to_be_released(s_block_idx, e_block_idx)
-                
     def get_seq_kv_len(self, seq: Sequence) -> int:
         return self.block_tables[seq.seq_id].get_seq_kv_len()
     
-    def free_released_blocks(self, seq: Sequence) -> None:
-        # get the block table
+    def free_prunned_blocks(self, seq: Sequence, rmv_block_idx: int) -> None:
+        # get the block table (only remove one block every time)
         block_table = self.block_tables[seq.seq_id]
-        if block_table.has_blocks_to_be_release:
-            # free the released blocks
-            block_table.free_released_blocks()
-        
+        block_table.free_prunned_blocks(rmv_block_idx)

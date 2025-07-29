@@ -195,7 +195,7 @@ def run_vllm(
         llm.generate(prompts,
                      sampling_params,
                      lora_request=lora_requests,
-                     use_tqdm=True)
+                     use_tqdm=False)
         end = time.perf_counter()
     else:
         assert lora_requests is None, "BeamSearch API does not support LoRA"
@@ -210,7 +210,7 @@ def run_vllm(
             BeamSearchParams(
                 beam_width=n,
                 max_tokens=output_len,
-                ignore_eos=True,
+                ignore_eos=False,
             ))
         end = time.perf_counter()
     return end - start
@@ -422,6 +422,7 @@ def main(args: argparse.Namespace):
     print(f"Throughput: {len(requests) / elapsed_time:.2f} requests/s, "
           f"{total_num_tokens / elapsed_time:.2f} total tokens/s, "
           f"{total_output_tokens / elapsed_time:.2f} output tokens/s")
+    print(f"Total elapsed time: {elapsed_time:.2f} seconds")
 
     # Output JSON results if specified
     if args.output_json:

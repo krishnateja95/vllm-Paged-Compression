@@ -93,14 +93,17 @@ class PlaceholderBlockSpaceManager(BlockSpaceManager):
     def get_num_cached_tokens(self, seq: Sequence) -> int:
         return 0
     
-    def prune_seq_kv_cache(self, seq: Sequence) -> None:
-        pass
+    # def prune_seq_kv_cache(self, seq: Sequence) -> None:
+    #     pass
     
-    def mark_part_blocks_to_be_released(self, seq: Sequence) -> None:
-        pass
+    # def mark_part_blocks_to_be_released(self, seq: Sequence) -> None:
+    #     pass
     
     def get_seq_kv_len(self, seq: Sequence) -> int:
         return 0
+
+    # def free_prunned_blocks(self, seq: Sequence, rmv_block_idx: int) -> None:
+    #     pass
     
-    def free_released_blocks(self, seq: Sequence) -> None:
+    def free_prunned_blocks(self, seq: Sequence, rmv_block_idx: int) -> None:
         pass

@@ -251,3 +251,8 @@ class AttentionImpl(ABC, Generic[T]):
         output: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         raise NotImplementedError
+    
+    @abstractmethod
+    def get_rmv_block_idx():
+        """Get the block index to be removed for each request."""
+        return {}

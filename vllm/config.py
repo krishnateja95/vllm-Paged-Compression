@@ -937,25 +937,28 @@ class PagedEvictConfig:
         hash_str = hashlib.md5(str(factors).encode()).hexdigest()
         
     def __init__(self,
+                 disable_evict_prefill: bool,
                  cache_prune_type: str, 
-                 prompt_evict_method: str,
-                 decode_evict_method: str,
+                 evict_method: str,
+                #  decode_evict_method: str,
                 #  evict_size: int,
-                 evict_freq: int,
+                #  evict_freq: int,
                  cache_budget: int,
-                 initial_blocks: int,
-                 num_block_merge: int) -> None:
+                #  initial_blocks: int,
+                #  num_block_merge: int,
+                 topk_blocks: int) -> None:
+        self.disable_evict_prefill = disable_evict_prefill
         self.cache_prune_type = cache_prune_type
-        self.prompt_evict_method = prompt_evict_method
-        self.decode_evict_method = decode_evict_method
+        self.evict_method = evict_method
+        # self.decode_evict_method = decode_evict_method
         # self.evict_size = evict_size
-        self.evict_freq = evict_freq
+        # self.evict_freq = evict_freq
         self.cache_budget = cache_budget
-        self.initial_blocks = initial_blocks # Number of compressed blocks to keep unprunned
-        self.num_block_merge = num_block_merge # Number of blocks to merge when evicting
-        self.original_block_size = 0
-        # self.compressed_block_size = 0
-        # self.compression_rate = 0 # set this value after get the compressed block size
+        # self.initial_blocks = initial_blocks # Number of compressed blocks to keep unprunned
+        # self.num_block_merge = num_block_merge # Number of blocks to merge when evicting
+        # self.original_block_size = 0
+        self.topk_blocks = topk_blocks
+        self.initial_blocks = 1  # Number of compressed blocks to keep unpruned
         
         self._verify_args()
         
@@ -963,39 +966,29 @@ class PagedEvictConfig:
         if self.cache_prune_type not in ["percentage", "budget"]:
             raise ValueError("Cache prune type must be either 'percentage' or 'budget'. Got "
                              f"{self.cache_prune_type}.")
+        assert self.cache_prune_type == "budget", "Cache prune type must be 'budget' for paged compression now."
         
-        if self.num_block_merge <= 0:
-                raise ValueError("Number of blocks to merge must be positive. Got "
-                                f"{self.num_block_merge}.")
+        # if self.num_block_merge <= 0:
+        #         raise ValueError("Number of blocks to merge must be positive. Got "
+        #                         f"{self.num_block_merge}.")
         
-        if self.cache_prune_type == "percentage":
-            if self.evict_freq <= 0:
-                raise ValueError("Evict freq must be positive. Got "
-                                f"{self.evict_freq}.")
-            if self.initial_blocks <= 0:
-                raise ValueError("Initial blocks must be >= 1. Got "
-                                f"{self.initial_blocks}.")
-        else:
+        if self.cache_prune_type == "budget":
             # budget case
-            if self.cache_budget <= 0:
+            if self.cache_budget < 0:
                 raise ValueError("Cache budget must be positive. Got "
                                 f"{self.cache_budget}.")
-        
-            
-    def update_args(self, block_size: int) -> None:
-        self.original_block_size = block_size
-        # if self.cache_prune_type == "percentage":
-        #     self.compressed_block_size = self.original_block_size - self.evict_size
-        #     assert self.compressed_block_size > 0 and \
-        #         self.original_block_size % self.compressed_block_size == 0, \
-        #             f"Block size must be divisible by compressed block size. block_size: {self.original_block_size}, " \
-        #             f"compressed_block_size: {self.compressed_block_size}"
-        #     self.compression_rate = int(self.original_block_size / self.compressed_block_size)
-        # elif self.cache_prune_type == "budget":
-        #     self.compression_rate = self.num_block_merge
-        #     assert self.cache_budget >= (self.initial_blocks + self.num_block_merge) * self.original_block_size
-        if self.cache_prune_type == "budget":
-            assert self.cache_budget >= (self.initial_blocks + self.num_block_merge) * self.original_block_size
+            if self.cache_budget < 128:
+                logger.warn("Cache budget is set to less than 128 tokens. "
+                            "Setting cache budget to 128 tokens.")
+                self.cache_budget = 128
+
+        if self.evict_method == 'local' and self.topk_blocks <= 1:
+               raise ValueError("Topk blocks must be > 1 when using 'local' evict method. "
+                                f"Got {self.topk_blocks}.") 
+               
+        if self.evict_method == 'global':
+            self.topk_blocks = -1
+            logger.warn("For global method, setting Topk blocks to -1 to indicate that we use all blocks.")
 
 class CacheConfig:
     """Configuration for the KV cache.
@@ -3225,16 +3218,6 @@ class VllmConfig:
             self.compilation_config.level = CompilationLevel.NO_COMPILATION
 
         current_platform.check_and_update_config(self)
-        
-        # Make sure block size is greater than evict size when paged_evict is enabled
-        if self.cache_config is not None and \
-            self.cache_config.paged_evict_config is not None:
-                # if self.cache_config.block_size < self.cache_config.paged_evict_config.evict_size:
-                #     raise ValueError(
-                #         f"Block size must be greater than evict size when paged_evict is enabled."
-                #         f"block_size: {self.cache_config.block_size}, evict_size: {self.cache_config.paged_evict_config.evict_size}")
-                # Update Paged Evict Config
-                self.cache_config.paged_evict_config.update_args(self.cache_config.block_size)
                 
         if not self.instance_id:
             self.instance_id = random_uuid()[:5]

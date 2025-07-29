@@ -903,12 +903,12 @@ class TorchCUDASDPABackendImpl(AttentionImpl[TorchCUDASDPAMetadata]):
                             self._prune_decode_reqs_streamingLLM(kv_cache, attn_metadata)
                         # prunned_keys, prunned_values, prunned_kvs_slot_mapping = None,
                         prune_time = time.perf_counter() - start
-                        logger.debug(f"Prune decode requests cost {prune_time:.6f} seconds. is_pruned={is_pruned_decode} num_update_tokens={num_update_tokens}")
+                        logger.debug(f"Prune decode requests cost {prune_time:.6f} seconds. is_pruned_decode={is_pruned_decode} num_update_tokens={num_update_tokens} ")
                         
-                        self.reqids_mapping_rmv_blockIdx = seqid_to_rmv_block_idx
+                        self.reqids_mapping_rmv_blockIdx = seqid_to_rmv_block_idx 
                         if is_pruned_decode:
                             decode_block_tables = updated_block_tables
-
+                        
                         # if prunned_keys is not None:
                         #     # need to merge the prunned keys with key, prunned values with value, and slot_mapping with mapping
                         #     prunned_keys = torch.cat([key, prunned_keys], dim=0)
@@ -926,9 +926,9 @@ class TorchCUDASDPABackendImpl(AttentionImpl[TorchCUDASDPAMetadata]):
                             # assign 0 to the rest of the cached keys and values
                             pruned_keys[key.shape[0]:] = 0
                             pruned_values[value.shape[0]:] = 0
-
+                            
                             pruned_kvs_slot_mapping = torch.cat([attn_metadata.slot_mapping, pruned_kvs_slot_mapping], dim=0)
-
+                            
                             key_cache, value_cache = self._update_kvcache(attn_type, pruned_keys, pruned_values, kv_cache, pruned_kvs_slot_mapping, attn_metadata.cross_slot_mapping, k_scale, v_scale)
                         else:
                             # no prunning, just update the input key and value to the kv_cache
@@ -1234,8 +1234,7 @@ class TorchCUDASDPABackendImpl(AttentionImpl[TorchCUDASDPAMetadata]):
             total_pruned_tokens += pruned_len
             
         if not is_prune_fill_reqs:
-            # No pruning needed, return original key and value
-            return key, value
+            return key, value  # No pruning needed, return original tensors
         
         # Pre-allocate final output tensors with exact size needed
         pruned_keys = torch.empty(
@@ -1381,15 +1380,16 @@ class TorchCUDASDPABackendImpl(AttentionImpl[TorchCUDASDPAMetadata]):
         updated_block_tables, seqid_to_rmv_block_idx = None, {} 
         
         is_pruned_decode = False
-        upt_block_tables = [] 
+        # upt_block_tables = [] 
+        idx_to_rmv_block_idx = {}
         tmp_slot_mapping = []
         for id, seq_len in enumerate(attn_metadata.seq_lens):
+            target_req_id, target_seq_id = self.block_l2norm_mgr.get_reqid_and_seqid(id)
             # Step-1: check if the request reach to the prunning point
             if seq_len <= self.paged_evict_config.cache_budget:
-                upt_block_tables.append(self.block_l2norm_mgr.get_req_block_tables(id))
+                # upt_block_tables.append(self.block_l2norm_mgr.get_req_block_tables(id))
                 continue
             
-            target_req_id, target_seq_id = self.block_l2norm_mgr.get_reqid_and_seqid(id)
             # seq_len exceed the cache budget, se we need to prune tokens
             if seq_len % self.cache_config.block_size != 0:
                 if self.paged_evict_config.evict_method == "streamingLLM-1":
@@ -1398,10 +1398,11 @@ class TorchCUDASDPABackendImpl(AttentionImpl[TorchCUDASDPAMetadata]):
                     slot_idx = seq_len % self.cache_config.block_size - 1
                     slot_id = block_id * self.cache_config.block_size + slot_idx
                     tmp_slot_mapping.append(slot_id)
-                upt_block_tables.append(self.block_l2norm_mgr.get_req_block_tables(id))
+                # upt_block_tables.append(self.block_l2norm_mgr.get_req_block_tables(id))
             else:
                 seqid_to_rmv_block_idx[id] = (target_req_id, 1)
-                upt_block_tables.append(self.block_l2norm_mgr.get_updated_block_tables(id, 1))
+                idx_to_rmv_block_idx[id] = 1
+                # upt_block_tables.append(self.block_l2norm_mgr.get_updated_block_tables(id, 1))
                 is_pruned_decode = True
 
         num_update_tokens = len(tmp_slot_mapping)
@@ -1414,17 +1415,17 @@ class TorchCUDASDPABackendImpl(AttentionImpl[TorchCUDASDPAMetadata]):
         #                                             dtype=torch.long,
         #                                             device=kv_cache_device, pin_memory=pin_memory)
             pruned_kvs_slot_mapping = torch.from_numpy(np.array(tmp_slot_mapping, dtype=np.int64)).to(
-                device=kv_cache_device, non_blocking=True) 
+                device=kv_cache_device, non_blocking=True)    
         
         if is_pruned_decode:
-            updated_block_tables = make_tensor_with_pad(
-                    upt_block_tables,
-                    pad=0,
-                    dtype=torch.int,
-                    device=kv_cache_device,
-                )
-        
-        # print(f"StreamingLLM num_update_tokens={num_update_tokens}, pruned_kvs_slot_mapping.shape={pruned_kvs_slot_mapping.shape if pruned_kvs_slot_mapping is not None else None}, is_pruned_decode={is_pruned_decode}, updated_block_tables.shape={updated_block_tables.shape if updated_block_tables is not None else None} seqid_to_rmv_block_idx={seqid_to_rmv_block_idx}")
+            # updated_block_tables = make_tensor_with_pad(
+            #         upt_block_tables,
+            #         pad=0,
+            #         dtype=torch.int,
+            #         device=kv_cache_device,
+            #     )
+            updated_block_tables = self._create_updated_block_tables(
+                attn_metadata.decode_metadata.block_tables, idx_to_rmv_block_idx)
                  
         # print(f"+++++++TorchCUDASDPABackendImpl---decode request cost={time.perf_counter() - start_1:.6f}")
         # return pruned_keys, pruned_values, pruned_kvs_slot_mapping, is_pruned_decode, updated_block_tables, seqid_to_rmv_block_idx
@@ -1482,22 +1483,23 @@ class TorchCUDASDPABackendImpl(AttentionImpl[TorchCUDASDPAMetadata]):
         updated_block_tables, seqid_to_rmv_block_idx = None, {} 
         
         is_pruned_decode = False
-        upt_block_tables = []
+        idx_to_rmv_block_idx = {}
+        # upt_block_tables = []
         for id, seq_len in enumerate(attn_metadata.seq_lens):
             # Step-1: check if the request reach to the prunning point
             if seq_len <= self.paged_evict_config.cache_budget:
-                upt_block_tables.append(self.block_l2norm_mgr.get_req_block_tables(id))
+                # upt_block_tables.append(self.block_l2norm_mgr.get_req_block_tables(id))
                 continue
             
             # step-2: check if seq_len reach to the boundary of a block
             if seq_len % self.cache_config.block_size != 0:
-                upt_block_tables.append(self.block_l2norm_mgr.get_req_block_tables(id))
+                # upt_block_tables.append(self.block_l2norm_mgr.get_req_block_tables(id))
                 continue
             
             is_pruned_decode = True
+            target_req_id, target_seq_id = self.block_l2norm_mgr.get_reqid_and_seqid(id)
             if self.enable_random_evict == True:
                 # randomly select a block id to be removed
-                target_req_id, target_seq_id = self.block_l2norm_mgr.get_reqid_and_seqid(id)
                 block_ids = attn_metadata.reqid_mapping_blocktables[target_req_id][int(target_seq_id)]
                 if self.paged_evict_config.evict_method == "local":
                     blk_start = 1
@@ -1508,12 +1510,13 @@ class TorchCUDASDPABackendImpl(AttentionImpl[TorchCUDASDPAMetadata]):
                     blk_end = len(block_ids) - 1
 
                 rmv_idx = random.randint(blk_start, blk_end - 1) # Exclude the last block
-                seqid_to_rmv_block_idx[id] = (target_req_id, rmv_idx)
-                upt_block_tables.append(self.block_l2norm_mgr.get_updated_block_tables(id, rmv_idx, is_rmv_l2norm=False))
+                seqid_to_rmv_block_idx[id] = (target_req_id,rmv_idx)
+                idx_to_rmv_block_idx[id] = rmv_idx
+                # upt_block_tables.append(self.block_l2norm_mgr.get_updated_block_tables(id, rmv_idx, is_rmv_l2norm=False))
             else: 
                 # step-3: calculate the value-l2-norm of the last block
-                target_req_id, target_seq_id = self.block_l2norm_mgr.get_reqid_and_seqid(id)
-                src_idx = attn_metadata.decode_metadata.block_tables[id][-1]
+                # src_idx = attn_metadata.decode_metadata.block_tables[id][-1]
+                src_idx = attn_metadata.reqid_mapping_blocktables[target_req_id][int(target_seq_id)][-1]
                 tmp_kvs = kv_cache[:, src_idx, :]
                 tmp_key = tmp_kvs[0].view(-1, self.num_kv_heads, self.head_size)
                 tmp_value = tmp_kvs[1].view(-1, self.num_kv_heads, self.head_size)
@@ -1536,21 +1539,50 @@ class TorchCUDASDPABackendImpl(AttentionImpl[TorchCUDASDPAMetadata]):
                         rmv_idx = idx
                         min_l2_norm = l2_norms[idx]
                 
-                seqid_to_rmv_block_idx[id] = (target_req_id, rmv_idx) 
+                seqid_to_rmv_block_idx[id] = (target_req_id, rmv_idx)
+                idx_to_rmv_block_idx[id] = rmv_idx 
 
-                upt_block_tables.append(self.block_l2norm_mgr.get_updated_block_tables(id, rmv_idx, is_rmv_l2norm=True))
+                # upt_block_tables.append(self.block_l2norm_mgr.get_updated_block_tables(id, rmv_idx, is_rmv_l2norm=True))
                 # print(f"layer_idx = {self.layer_idx} raw block tables type: {type(attn_metadata.decode_metadata.block_tables)}, shape={attn_metadata.decode_metadata.block_tables.shape} raw block tables: {attn_metadata.decode_metadata.block_tables[id]}, updated block tables: {upt_block_tables[id]}")
  
         ### Create a new block tables based on the upt_block_tables
         if is_pruned_decode:
-            updated_block_tables = make_tensor_with_pad(
-                    upt_block_tables,
-                    pad=0,
-                    dtype=torch.int,
-                    device=kv_cache_device,
-                ) 
+            # updated_block_tables = make_tensor_with_pad(
+            #         upt_block_tables,
+            #         pad=0,
+            #         dtype=torch.int,
+            #         device=kv_cache_device,
+            #     )
+            updated_block_tables = self._create_updated_block_tables(
+                attn_metadata.decode_metadata.block_tables, idx_to_rmv_block_idx) 
          
         return updated_block_tables, seqid_to_rmv_block_idx, is_pruned_decode
+    
+    def _create_updated_block_tables(self, original_tables, idx_to_rmv_block_idx):
+        # This function is used to create the updated block tables for the streamingLLM case
+        batch_size, max_blocks = original_tables.shape
+        device = original_tables.device
+        
+        # clone the original tables, we cannot modify the original tables
+        # because it will be used in the next decode layer
+        updated_tables = original_tables.clone()
+        max_new_length = max_blocks - 1  # Get the sequence IDs from the first column
+        for idx in range(batch_size):
+            origin_blocks = updated_tables[idx]
+            if idx in idx_to_rmv_block_idx:
+                rmv_block_idx = idx_to_rmv_block_idx[idx]
+                # Remove the block at rmv_block_idx and shift the rest left
+                new_blocks = torch.cat([origin_blocks[:rmv_block_idx], origin_blocks[rmv_block_idx+1:]])
+            else:
+                # No block to remove, keep the original blocks
+                new_blocks = origin_blocks[:max_new_length]
+            
+            # write the new blocks to the updated tables
+            updated_tables[idx, :len(new_blocks)] = new_blocks
+            updated_tables = updated_tables[:,:max_new_length]  # Ensure the shape is consistent
+        
+        # print(f"+++++create_updated_block_tables: original_tables.shape={original_tables.shape}, updated_tables.shape={updated_tables.shape}, max_new_length={max_new_length}")    
+        return updated_tables
 
 
 def _make_alibi_bias(

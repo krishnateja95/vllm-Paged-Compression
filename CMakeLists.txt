@@ -159,9 +159,9 @@ endif()
 #
 # get_torch_gpu_compiler_flags(VLLM_GPU_FLAGS ${VLLM_GPU_LANG})
 get_torch_gpu_compiler_flags(VLLM_GPU_FLAGS ${VLLM_GPU_LANG})
-if (VLLM_GPU_LANG STREQUAL "CUDA")
-  list(APPEND VLLM_GPU_FLAGS "-ccbin=$ENV{CC}")
-endif()
+# if (VLLM_GPU_LANG STREQUAL "CUDA")
+#   list(APPEND VLLM_GPU_FLAGS "-ccbin=$ENV{CC}")
+# endif()
 
 #
 # Set nvcc parallelism.

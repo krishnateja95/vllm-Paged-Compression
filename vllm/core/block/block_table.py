@@ -317,7 +317,7 @@ class BlockTable:
         if self.paged_evict_config is not None:
             # get the number of required blocks, and total_tokens after prune prompt
             num_blocks, total_unprunned_tokens = get_num_required_blocks_after_prune_promt(
-                len(token_ids), self.paged_evict_config)
+                len(token_ids), self.paged_evict_config, self._block_size)
             # print(f"*******BlockTable go here. total_unprunned_tokens = {total_unprunned_tokens}, num_blocks = {num_blocks}")
             # prunne the input token_ids to the total_unprunned_tokens
             token_ids = token_ids[:total_unprunned_tokens]
@@ -459,54 +459,8 @@ class BlockTable:
         """
         return self._num_cached_slots
     
-    def free_released_blocks(self) -> None:
-        """
-        Free a contiguous range of blocks that are marked to be released.
-        """
-        # print(f"BlockTable's free_released_blocks: self._num_full_slots = {self._num_full_slots}, self._num_cached_slots={self._num_cached_slots}, "
-        #       f"self._blocks_ids = {self.physical_block_ids}, self._blocks_ids = {len(self.physical_block_ids)}, self._blocks = {len(self._blocks)}")
-        ## Mehtod 1: non-optimized version
-        # assert self._is_allocated
-        # released_idxs = []
-        # for idx, b in enumerate(self.blocks):
-        #     if b.is_to_be_release:
-        #         # print(f"BlockTable's free_released_blocks: idx={idx}, block_id={b.block_id}")
-        #         self._allocator.free(b)
-        #         self._num_cached_slots -= len(b.token_ids)
-        #         released_idxs.append(idx)
-        
-        # num_removed = 0
-        # for idx in released_idxs:
-        #     self._blocks.remove(idx - num_removed)
-        #     num_removed += 1
-        # self._has_blocks_to_be_release = True
-        
-        ## Method 2: optimized version
-        assert self._is_allocated
-        
-        start, end = None, None
-        in_release_segment = False
-        
-        for i, block in enumerate(self.blocks):
-            if block.is_to_be_release:
-                if start is None:
-                    start = i
-                end = i
-                in_release_segment = True
-            elif in_release_segment:
-                break  # Stop early
-        
-        # print(f"BlockTable's free_released_blocks: start={start}, end={end}, end+1={None if end is None else end +1} in_release_segment={in_release_segment}, len(self._blocks)={len(self._blocks)}") 
-        if start is not None:
-            # Free blocks
-            for i in range(start, end + 1):
-                block = self._blocks[i]
-                self._allocator.free(block)
-                self._num_cached_slots -= len(block.token_ids)
-                # print(f"BlockTable's free_released_blocks: i={i}")
-            # Remove blocks
-            self._blocks.remove_blocks(start, end + 1)
-            # print(f"BlockTable's free_released_blocks: After release..., len(self._blocks)={len(self._blocks)}")
-        
-        self._has_blocks_to_be_release = False   
-        
+    def free_prunned_blocks(self, rmv_block_idx: int) -> None:
+        block = self._blocks[rmv_block_idx]
+        self._allocator.free(block)
+        self._num_cached_slots -= len(block.token_ids)
+        self._blocks.remove(rmv_block_idx)

@@ -239,7 +239,7 @@ class LLMEngine:
             use_cached_outputs,
         )
 
-        print(f"Initializing an LLM engine: block_size = {self.cache_config.block_size}, evict_freq = {self.cache_config.paged_evict_config.evict_freq if self.cache_config.paged_evict_config else -1}")
+        logger.info(f"Initializing an LLM engine: block_size={self.cache_config.block_size}, cache_budget={self.cache_config.paged_evict_config.cache_budget if self.cache_config.paged_evict_config else -1}")
         self.log_stats = log_stats
         self.use_cached_outputs = use_cached_outputs
 
@@ -1175,6 +1175,22 @@ class LLMEngine:
                 use_cache=self.use_cached_outputs)
             if request_output:
                 ctx.request_outputs.append(request_output)
+            
+            ### used for paged eviction    
+            if self.cache_config.paged_evict_config is not None and \
+                self.cache_config.paged_evict_config.evict_method in ['streamingLLM', 'streamingLLM-1', 'global', 'local']:
+                assert has_multiple_outputs == False, (
+                    "Paged eviction is not supported for multi-step decoding for now")
+                seq_group_rmv_block_idxs = outputs[0].reqids_to_rmv_block_idx
+                ## assumed each sequence group has only one sequence
+                # if len(seq_group_rmv_block_idxs) > 0: 
+                #     print(f"i={i}, seq_group_rmv_block_idxs: {seq_group_rmv_block_idxs}")
+                
+                if i in seq_group_rmv_block_idxs:
+                   for scheduler in self.scheduler:
+                    #    scheduler.update_block_tables(i, seq_group_rmv_block_idxs[i])
+                        seq_group_id, rmv_idx = seq_group_rmv_block_idxs[i]
+                        scheduler.update_block_tables(seq_group_id, rmv_idx)
 
         # For multi-step with streaming, create outputs each iteration
         if not is_last_step and ctx.multi_step_stream_outputs:
@@ -1342,6 +1358,7 @@ class LLMEngine:
              allow_async_output_proc
              ) = self.scheduler[virtual_engine].schedule()
 
+            # print(f"++++Scheduler step(): reqs={len(seq_group_metadata_list)}")
             ctx.seq_group_metadata_list = seq_group_metadata_list
             ctx.scheduler_outputs = scheduler_outputs
 
@@ -1373,7 +1390,7 @@ class LLMEngine:
             # will cause one virtual engine's microbatch to block the pipeline.
             last_sampled_token_ids = \
                 self._get_last_sampled_token_ids(virtual_engine)
-
+            
             execute_model_req = ExecuteModelRequest(
                 seq_group_metadata_list=seq_group_metadata_list,
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
@@ -1441,9 +1458,7 @@ class LLMEngine:
             if not allow_async_output_proc:
                 self._process_model_outputs(ctx=ctx)
                 # print(f"Finished processing model outputs in non-async mode. len(seq_group_metadata_list)) = {len(seq_group_metadata_list)}", )
-
-                for scheduler in self.scheduler:
-                    scheduler.notify_step_done()
+            
                 # Log stats.
                 self.do_log_stats(scheduler_outputs, outputs)
 
