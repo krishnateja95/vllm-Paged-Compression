@@ -1493,15 +1493,15 @@ class Scheduler:
             self._finished_requests_ids.append(seq_group.request_id)
 
             if seq_group.metrics.finished_time is not None:
-                log.debug(f"Finished request {seq_group.request_id} : "
+                logger.info(f"Finished request {seq_group.request_id} : "
                         f"arrival_time={seq_group.metrics.arrival_time} "
                         f"first_scheduled_time={seq_group.metrics.first_scheduled_time} "
                         f"time_in_queue={seq_group.metrics.time_in_queue} "
-                        f"time_prefill={seq_group.metrics.first_token_time - seq_group.metrics.first_scheduled_time} "
-                        f"TTFT(s)={seq_group.metrics.first_token_time - seq_group.metrics.arrival_time} "
-                        f"time_decodes={seq_group.metrics.finished_time - seq_group.metrics.first_token_time} "
-                        f"TPOT(s)={(time_decodes) / sum(seq.get_output_len() for seq in seq_group.get_seqs())} "
-                        f"e2e_latency(s)={seq_group.metrics.finished_time - seq_group.metrics.arrival_time} ")
+                        f"time_prefill(s)={(seq_group.metrics.first_token_time - seq_group.metrics.first_scheduled_time):.6f} "
+                        f"TTFT(s)={(seq_group.metrics.first_token_time - seq_group.metrics.arrival_time):.6f} "
+                        f"time_decodes(s)={(seq_group.metrics.finished_time - seq_group.metrics.first_token_time):.6f} "
+                        f"TPOT(s)={((seq_group.metrics.finished_time - seq_group.metrics.first_token_time) / sum(seq.get_output_len() for seq in seq_group.get_seqs())):.6f} "
+                        f"e2e_latency(s)={(seq_group.metrics.finished_time - seq_group.metrics.arrival_time):.6f} ")
 
         # Free finished seqs
         self._free_finished_seqs(seq_group)
