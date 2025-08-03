@@ -2,5 +2,7 @@ IF_NAME=ib0
 export HOST_IP=`ip -4 addr show $IF_NAME | grep -oP '(?<=inet\s)\d+(\.\d+){3}'`
 export VLLM_HOST_IP=$HOST_IP
 export VLLM_ATTENTION_BACKEND=TORCH_SDPA
-#export VLLM_RPC_BASE_PATH=$HOME/vllm_ipc/
-export VLLM_RPC_BASE_PATH=/tmp/vllm_ipc/ 
+export VLLM_RPC_BASE_PATH=/tmp/vllm_ipc/
+export OMP_NUM_THREADS=1
+export VLLM_LOG_LEVEL=INFO
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True 
